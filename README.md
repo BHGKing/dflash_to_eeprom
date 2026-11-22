@@ -72,7 +72,26 @@ python3 gui.py dump.bin
 
 ### Windows executable
 
-`build.cmd` installs PyInstaller and tkinterdnd2, then builds `dist\dflash_to_eee.exe` from `dflash_to_eee.spec`. The GitHub Actions workflow `windows-exe` runs the tests on Windows and uploads that executable. Drop-in profiles can be placed in a `profiles` folder next to the exe.
+`build.cmd` installs PyInstaller and tkinterdnd2, then builds `dist\dflash_to_eee.exe` from `dflash_to_eee.spec`. The GitHub Actions workflow `windows-exe` runs the tests on Windows and uploads that executable as a build artifact. A version tag publishes the same exe on the Releases page; see Releasing. Drop-in profiles can be placed in a `profiles` folder next to the exe.
+
+## Releasing
+
+Pushing a version tag runs `.github/workflows/release.yml`. That workflow checks out the tag, runs the tests, builds `dflash_to_eee.exe` with `dflash_to_eee.spec`, and publishes a GitHub Release for the tag. The release gets the exe, `SHA256SUMS.txt` (SHA-256, two spaces, then the file name), and the notes GitHub generates from commits since the previous tag. It uses the built-in `GITHUB_TOKEN` with `contents: write`. No other secret is required.
+
+From an up-to-date `master`:
+
+```bash
+git checkout master
+git pull origin master
+git tag -a v1.0.0 -m "v1.0.0"
+git push origin v1.0.0
+```
+
+The release shows up on the repository Releases page when the workflow finishes. On Windows, check the download with `Get-FileHash .\dflash_to_eee.exe -Algorithm SHA256` and compare it to `SHA256SUMS.txt` (the file stores the hash in lowercase).
+
+Creating the release in the GitHub UI does the same work. Open **Releases → Draft a new release**, choose or create the tag `v1.0.0` on `master`, generate the notes if you want them filled in now, and publish. Publishing creates the tag, which starts the workflow and attaches the exe and checksum to that release. A draft stays a draft; the files are added when the build finishes, and you publish it yourself.
+
+Tags must look like `v1.0.0`. A suffix such as `v1.0.0-rc.1` is published as a pre-release. To rebuild a tag that already exists, open **Actions → Release → Run workflow** and enter that tag. The new exe and checksum replace the previous files. The notes are left as they are.
 
 ## Command line
 
