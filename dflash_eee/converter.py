@@ -15,7 +15,9 @@ is 256 bytes, the header is two words, and each data record is an address
 word plus a data word, 63 records to a sector. Ready sectors are kept erased.
 The address word's top bits are the record state (empty ``0xF800``, programmed
 ``0xB800`` in the dumps this tool was checked against) and the low 11 bits
-are the EEE word address, which covers the 4 KB maximum.
+are the word address in the 4 KB buffer at 0x13_F000. A profile keeps the
+top-aligned slice AN3743 assigns to its ERPART: 4 KB starts at word 0, 2 KB
+starts at word 1024.
 """
 
 from __future__ import annotations
@@ -25,6 +27,8 @@ import struct
 from dataclasses import dataclass, field
 
 from dflash_eee.profiles import (
+    BUILTIN,
+    SECTOR_SIZE,
     AsciiField,
     DateField,
     Field as FieldSpec,
@@ -32,6 +36,7 @@ from dflash_eee.profiles import (
     PartField,
     ProfileError,
     get_profile,
+    smallest_erpart,
 )
 
 
@@ -189,6 +194,9 @@ class DFlashConverter(object):
         self.data: list[int] = []
         self.messages: list[tuple[str, str]] = []
         self.out_of_range = 0
+        self.landed = 0
+        self.addr_min: int | None = None
+        self.addr_max: int | None = None
 
     def _emit(self, level: str, message: str) -> None:
         self.messages.append((level, message))
@@ -331,21 +339,60 @@ class DFlashConverter(object):
 
     def _build_image(self) -> None:
         startblock = (self.endblock + 1) % self.NB_BLOCKS
+        base = self.profile.eee_word_base
         data = [0xFFFF] * self.EESIZE
         order = list(range(startblock, self.NB_BLOCKS)) + list(range(0, startblock))
+        self.out_of_range = 0
+        self.landed = 0
+        self.addr_min = None
+        self.addr_max = None
         for block in order:
-            for item in self.block_data[block]:
-                addr = item[0]
-                if addr >= self.EESIZE:
+            for addr, value in self.block_data[block]:
+                if self.addr_min is None or addr < self.addr_min:
+                    self.addr_min = addr
+                if self.addr_max is None or addr > self.addr_max:
+                    self.addr_max = addr
+                slot = addr - base
+                if slot < 0 or slot >= self.EESIZE:
                     self.out_of_range += 1
                     self.corrupt = True
-                    self._emit(
-                        "error",
-                        "Record address 0x%04X is outside the %d-byte EEE" % (addr, self.EESIZE * 2),
-                    )
                     continue
-                data[addr] = item[1]
+                data[slot] = value
+                self.landed += 1
         self.data = data
+
+    def _window_issue(self) -> Issue | None:
+        """One sentence when record addresses miss this profile's EEE slice."""
+
+        if not self.out_of_range or self.addr_min is None or self.addr_max is None:
+            return None
+        pages = smallest_erpart(self.addr_min, self.addr_max)
+        parts = [
+            "%d record(s) are outside this profile's EEE window and were not written."
+            % self.out_of_range
+        ]
+        if self.landed == 0:
+            parts.append("No record landed in the window, so there is no EEPROM image to save.")
+        if pages is not None:
+            size = pages * SECTOR_SIZE
+            if size != self.profile.eee_size:
+                supported = [
+                    profile.title for profile in BUILTIN
+                    if profile.conversion_enabled and profile.erpart_pages == pages
+                    and profile.status == "supported" and profile.id != self.profile.id
+                ]
+                others = [
+                    profile.title for profile in BUILTIN
+                    if profile.conversion_enabled and profile.erpart_pages == pages
+                    and profile.status != "supported" and profile.id != self.profile.id
+                ]
+                names = supported or others
+                where = "the top %d bytes of the 4 KB EEE buffer (ERPART %d)" % (size, pages)
+                if names:
+                    parts.append("Those addresses belong in %s. Try %s." % (where, " or ".join(names)))
+                else:
+                    parts.append("Those addresses belong in %s." % where)
+        return Issue("error", " ".join(parts))
 
     def _image_bytes(self) -> bytes:
         return b"".join(struct.pack(">H", word) for word in self.data)
@@ -370,8 +417,13 @@ class DFlashConverter(object):
         logging.info(self._get_info())
 
     def to_result(self, input_size: int, check_size: bool) -> ConversionResult:
-        image = self._image_bytes()
+        records = sum(len(items) for items in self.block_data)
+        blank = self.out_of_range > 0 and self.landed == 0 and records > 0
+        image = None if blank else self._image_bytes()
         issues = [Issue(level, text) for level, text in self.messages]
+        window_issue = self._window_issue()
+        if window_issue is not None:
+            issues.append(window_issue)
         if check_size and input_size != self.profile.dflash_size:
             if input_size < self.profile.scan_offset + self.profile.scan_sectors * self.BLOCKSIZE:
                 # Already failed earlier. Kept for callers that still ask.
@@ -391,14 +443,8 @@ class DFlashConverter(object):
                 "error",
                 "Unrecognized D-Flash layout: no sector header 0x%04X." % self.BLOCK_VALID,
             ))
-        if self.out_of_range:
-            issues.append(Issue(
-                "error",
-                "%d record(s) pointed past the %d-byte EEE and were not written."
-                % (self.out_of_range, self.profile.eee_size),
-            ))
         fields = []
-        if self.profile.fields and self.data:
+        if image is not None and self.profile.fields and self.data:
             fields = [render_field(spec, self.data) for spec in self.profile.fields]
         reason = {
             "new_blocks": "Ready sectors mark the end of the journal.",
@@ -415,8 +461,11 @@ class DFlashConverter(object):
             "records": sum(len(items) for items in self.block_data),
             "endblock": self.endblock,
             "endblock_reason": reason,
-            "eee_bytes": len(image),
+            "eee_bytes": 0 if image is None else len(image),
             "out_of_range": self.out_of_range,
+            "landed": self.landed,
+            "addr_min": self.addr_min,
+            "addr_max": self.addr_max,
         }
         return ConversionResult(
             image=image,

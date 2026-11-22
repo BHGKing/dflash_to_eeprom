@@ -128,9 +128,6 @@ def report_lines(result: ConversionResult, extra: list[Issue] | None = None) -> 
     unknown_cmds = sum(1 for issue in result.issues if issue.text.startswith("Unknown CMD type"))
     if unknown_cmds:
         rows.append(("error", "%d record(s) have an unknown command code." % unknown_cmds))
-    out_of_range = result.stats.get("out_of_range", 0)
-    if out_of_range:
-        rows.append(("error", "%d record(s) were outside the EEE and were skipped." % out_of_range))
     if result.image is not None:
         rows.append(("info", "EEPROM image: %d bytes." % len(result.image)))
     if result.endblock is not None:

@@ -45,6 +45,15 @@ CMD_EMPTY = 0xF800
 DFLASH_BYTES = 32 * 1024
 DFLASH_SECTORS = DFLASH_BYTES // SECTOR_SIZE  # 128
 
+# AN3490 Figure 2: the buffer RAM is 16 regions of 128 words (4 KB) at
+# global 0x13_F000-0x13_FFFF. AN3743 Figure 6 numbers those regions from
+# the top: ERPART 1 occupies 0x13_FC00-0x13_FFFF, and a larger ERPART
+# grows downward. The record address label (AN3490 section 4.2) is the
+# word index in that 4 KB buffer, not an offset from the enabled slice.
+EEE_BUFFER_PAGES = 16
+EEE_BUFFER_BYTES = EEE_BUFFER_PAGES * SECTOR_SIZE  # 4096
+WORDS_PER_PAGE = SECTOR_SIZE // 2  # 128
+
 _ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
@@ -149,6 +158,21 @@ class ModuleProfile:
         return self.eee_size // 2
 
     @property
+    def eee_word_base(self) -> int:
+        """Word address of byte 0 of this profile's image, in the 4 KB buffer."""
+
+        if self.layout.name != S12XE_LAYOUT.name:
+            return 0
+        pages = self.erpart_pages
+        if pages is None or pages * SECTOR_SIZE != self.eee_size:
+            if self.eee_size % SECTOR_SIZE or not (SECTOR_SIZE <= self.eee_size <= EEE_BUFFER_BYTES):
+                return 0
+            pages = self.eee_size // SECTOR_SIZE
+        if not 1 <= pages <= EEE_BUFFER_PAGES:
+            return 0
+        return eee_word_base(pages)
+
+    @property
     def status_label(self) -> str:
         return {
             "supported": "Supported",
@@ -166,6 +190,31 @@ class ModuleProfile:
             "%s: user D-Flash %d sectors (%d bytes), EEE %d pages (%d bytes)."
             % (prefix, self.dfpart_sectors, user, self.erpart_pages, eee)
         )
+
+
+def eee_word_base(pages: int) -> int:
+    """First word index of an ERPART slice inside the 4 KB EEE buffer.
+
+    Page 16 (4 KB) starts at word 0. Page 8 (2 KB) starts at word 1024,
+    which is byte 0x800, global address 0x13_F800. Page 1 starts at word
+    1920, global address 0x13_FC00, matching AN3743 Figure 6.
+    """
+
+    if pages < 1 or pages > EEE_BUFFER_PAGES:
+        raise ProfileError("ERPART must be from 1 to %d" % EEE_BUFFER_PAGES)
+    return (EEE_BUFFER_PAGES - pages) * WORDS_PER_PAGE
+
+
+def smallest_erpart(min_word: int, max_word: int) -> int | None:
+    """Smallest top-aligned ERPART whose window contains both word addresses."""
+
+    if min_word < 0 or max_word >= EEE_BUFFER_PAGES * WORDS_PER_PAGE or min_word > max_word:
+        return None
+    for pages in range(1, EEE_BUFFER_PAGES + 1):
+        base = eee_word_base(pages)
+        if min_word >= base and max_word < base + pages * WORDS_PER_PAGE:
+            return pages
+    return None
 
 
 def partition_is_valid(dfpart: int, erpart: int, total_sectors: int = DFLASH_SECTORS) -> bool:
@@ -359,26 +408,26 @@ BUILTIN: tuple[ModuleProfile, ...] = (
         unknown_sector="error",
         summary=(
             "The XF BCM gives the entire 32 KB D-Flash to the EEE journal and "
-            "emulates 2 KB (8 sectors), not the 4 KB used by the BMW FRM3. "
-            "The journal encoding is the same S12XE hardware format. The image "
-            "written back is 2 KB. Records addressed above that window are reported "
-            "as errors instead of being stored in a spare 2 KB."
+            "emulates 2 KB (ERPART 8). The record's low 11 bits are the word "
+            "address in the 4 KB buffer RAM at 0x13_F000-0x13_FFFF. A smaller "
+            "ERPART occupies the top of that buffer, so this image is words "
+            "1024-2047 (bytes 0x800-0xFFF of a 4 KB replay), not words 0-1023."
         ),
         write_notes=(
-            "Partition to EEE = 8 sectors (2048 bytes) and user D-Flash = 0, then "
+            "Partition to EEE = 8 x 256 (2048 bytes) and user D-Flash = 0, then "
             "write this 2 KB file to EEPROM, not to D-Flash. Verify the read-back. "
-            "Key programming and configuration can still require JLR SDD. "
-            "The original 4 KB FRM tool's upper half is the erased spare of a 4 KB "
-            "image; this profile does not emit that spare."
+            "The file is the top 2 KB of the 4 KB buffer (global 0x13_F800-0x13_FFFF). "
+            "Key programming and configuration can still require JLR SDD."
         ),
         assumptions="",
         sources=(
-            "Jaguar Forum, BCM repair: XF emulated EEPROM is restored with this project's D-Flash replay; the XF uses 2 KB, so the blank upper half of the old 4 KB output was discarded, and the partition used was 2048 bytes EEPROM and 0 D-Flash. https://www.jaginfo.org/threads/bcm-repair.117049/page-7",
+            "Jaguar Forum, BCM repair: XF emulated EEPROM is restored with this project's D-Flash replay, and the partition used was 2048 bytes EEPROM and 0 D-Flash. https://www.jaginfo.org/threads/bcm-repair.117049/page-7",
             "Jaguar Forum, XF key-not-found: original allocation described as 2048 bytes EEPROM and 0 bytes D-Flash, with the whole 32 KB D-Flash backing that EEPROM. https://www.jaginfo.org/threads/problem-with-jaguar-xf-key-not-found.117470/page-4",
             "Jaguar Forum, BCMB dump rewrite: XF rear BCMB CX23-14D628 on MC9S12XET256; facelift DX23 partition described as 2 KB EEE and 0 D-Flash. https://www.jaginfo.org/threads/bcmb-dump-rewrite.118137/",
             "MHH AUTO, 2013 Jaguar XF BCM: MC9S12XET256, repair partition emulated EEPROM 8 x 256 and D-Flash 0. https://mhhauto.com/Thread-2013-JAGUAR-XF-BCM-FAULTY-DUE-TO-BATTERY-DISCONNECTION",
             "Xhorse VVDI, Tips and Info about MC9S12XE Chip: D-Flash on the MC9S12XE series is 32 KB. https://www.xhorsevvdi.com/service/tips-and-info-about-mc9s12xe-chip.html",
-            "Freescale AN3490: family record system (256-byte sector, 63 records, DFPART/ERPART). ERPART 8 and DFPART 0 meets the size rule and is 2 KB of EEE RAM. https://www.nxp.com/docs/en/application-note/AN3490.pdf",
+            "Freescale AN3490 Figure 2 and section 4.2: buffer RAM is 4 KB at 0x13_F000-0x13_FFFF, and each record's address label is the EEE RAM word address in that buffer. ERPART 8 and DFPART 0 meets the size rule and is 2 KB of EEE RAM. https://www.nxp.com/docs/en/application-note/AN3490.pdf",
+            "Freescale AN3743 Figure 6: ERPART regions are taken from the top of the buffer. ERPART 1 is the 256 bytes at 0x13_FC00-0x13_FFFF, so ERPART 8 is 0x13_F800-0x13_FFFF. https://www.nxp.com/docs/en/application-note/AN3743.pdf",
         ),
         fields=(),
     ),
@@ -406,7 +455,8 @@ BUILTIN: tuple[ModuleProfile, ...] = (
             "Published partition is 4 KB user D-Flash plus 2 KB EEE. "
             "A healthy locked module does not yield a plain EEE image; the chip "
             "has to be unlocked first. This profile replays a raw 32 KB read "
-            "into a 2 KB image."
+            "into a 2 KB image, using the top of the 4 KB buffer (words 1024-2047), "
+            "the same window as the XF BCM."
         ),
         write_notes=(
             "Unlock before reading (Xhorse notes the security byte FC). "
