@@ -2,10 +2,11 @@
 # Copyright 2026 Jose
 # Licensed under the BSD-3-Clause license. The full notice is in LICENSE.
 
-"""Side-by-side hex compare window.
+"""Compare page for the desktop notebook.
 
-This module is loaded by the desktop tool and adds its own Tools menu.
-The File menu, Help menu and first-run notices stay in gui.py.
+The page is one tab beside Convert. Tools → Compare files... only selects
+that tab. Another tool can add its own page with ``App.add_page`` and does
+not need to edit this module.
 """
 
 from __future__ import annotations
@@ -33,12 +34,33 @@ from dflash_eee.report import shorten_middle
 
 
 def attach_compare(app) -> None:
-    """Add Tools → Compare files... to the current menu bar.
+    """Add the Compare tab and Tools → Compare files...
 
-    The desktop window rebuilds its menu when the language changes, so this
-    runs after every rebuild. It does not keep a one-shot flag.
+    The desktop window rebuilds its menu when the language changes, so the
+    menu item is added after every rebuild. The page itself is created once.
     """
 
+    _ensure_tools_menu(app)
+    if getattr(app, "compare_page", None) is None:
+        frame = ttk.Frame(app.notebook)
+        page = CompareWindow(app, frame)
+        app.add_page("compare", frame, "gui.tab.compare", on_show=page._prefill_if_empty)
+    else:
+        app.compare_page.refresh_language()
+    app.open_compare = lambda: open_compare_window(app)
+    app._compare_window = app.compare_page
+
+
+def open_compare_window(app):
+    """Select the Compare tab. This does not open another window."""
+
+    page = app.compare_page
+    app.show_page("compare")
+    page._prefill_if_empty()
+    return page
+
+
+def _ensure_tools_menu(app) -> None:
     menu_name = app.root.cget("menu")
     if not menu_name:
         return
@@ -53,24 +75,6 @@ def attach_compare(app) -> None:
         bar.add_cascade(label=tools_label, menu=tools)
     else:
         bar.insert_cascade(help_index, label=tools_label, menu=tools)
-    app._compare_window = getattr(app, "_compare_window", None)
-    app.open_compare = lambda: open_compare_window(app)
-
-
-def open_compare_window(app):
-    """Open the compare window, or bring the existing one forward."""
-
-    existing = getattr(app, "_compare_window", None)
-    if existing is not None and existing.is_open():
-        existing.top.lift()
-        try:
-            existing.top.focus_set()
-        except tk.TclError:
-            pass
-        return existing
-    window = CompareWindow(app)
-    app._compare_window = window
-    return window
 
 
 def _cascade_index(menu, label: str):
@@ -102,20 +106,26 @@ def _wheel_steps(event) -> int:
 class CompareWindow:
     """Two locked hex views, a clickable range list, and a report export."""
 
-    def __init__(self, app):
+    def __new__(cls, app, parent=None):
+        existing = getattr(app, "compare_page", None)
+        if existing is not None and parent is None:
+            existing._prefill_if_empty()
+            return existing
+        return super().__new__(cls)
+
+    def __init__(self, app, parent=None):
+        if getattr(self, "_ready", False):
+            return
         self.app = app
-        self.top = tk.Toplevel(app.root)
-        self.top.title(t("gui.compare.title"))
-        self.top.geometry("1280x760")
-        self.top.minsize(860, 520)
-        self.top.configure(bg="#e6edf3")
-        self.top.protocol("WM_DELETE_WINDOW", self.close)
+        self.shell = app.root
+        self.frame = parent if parent is not None else ttk.Frame(app.notebook)
+        self.frame.configure(style="TFrame")
         self.mono = app.mono
         self.ui = app.ui
         self.ui_bold = app.ui_bold
         self.ui_small = app.ui_small
         try:
-            self.line_height = tkfont.Font(self.top, font=self.mono).metrics("linespace") or 16
+            self.line_height = tkfont.Font(self.shell, font=self.mono).metrics("linespace") or 16
         except tk.TclError:
             self.line_height = 16
         if self.line_height < 1:
@@ -149,36 +159,32 @@ class CompareWindow:
         self._status_kwargs: dict = {}
 
         self._build()
-        self._prefill_last_conversion()
-        for sequence in ("<Control-o>", "<Control-O>", "<Control-s>", "<Control-S>", "<Control-Return>"):
-            self.top.bind(sequence, self._swallow)
-        self.top.bind("<F3>", self._on_next_key)
-        self.top.bind("<Shift-F3>", self._on_prev_key)
-        self.top.bind("<Next>", self._on_page_down)
-        self.top.bind("<Prior>", self._on_page_up)
-        self.top.bind("<Home>", self._on_home)
-        self.top.bind("<End>", self._on_end)
-        self.top.bind("<Configure>", self._on_window_configure)
+        self._bind_keys()
+        self.frame.bind("<Configure>", self._on_window_configure)
+        self._prefill_if_empty()
+        self.app.compare_page = self
         self.app._compare_window = self
+        self._ready = True
+        if parent is None:
+            self.app.add_page("compare", self.frame, "gui.tab.compare", on_show=self._prefill_if_empty)
 
     def is_open(self) -> bool:
+        """True while the Compare tab is the one on screen."""
+
         try:
-            return bool(self.top.winfo_exists())
+            return bool(self.frame.winfo_exists()) and self.app.current_page() == "compare"
         except tk.TclError:
             return False
 
     def close(self) -> None:
-        if getattr(self.app, "_compare_window", None) is self:
-            self.app._compare_window = None
-        try:
-            self.top.destroy()
-        except tk.TclError:
-            pass
+        """Leave Compare and return to Convert. The page stays in the notebook."""
+
+        if "convert" in getattr(self.app, "_pages", {}):
+            self.app.show_page("convert")
 
     def refresh_language(self) -> None:
-        """Apply the current catalog to this window, including an open compare."""
+        """Apply the current catalog to the Compare tab."""
 
-        self.top.title(t("gui.compare.title"))
         self.title_label.configure(text=t("gui.compare.title"))
         self.subtitle_label.configure(text=t("gui.compare.subtitle"))
         self.file_a_label.configure(text=t("gui.compare.file_a"))
@@ -209,7 +215,7 @@ class CompareWindow:
 
     def browse(self, side: str) -> None:
         selected = filedialog.askopenfilename(
-            parent=self.top,
+            parent=self.shell,
             title=t("gui.compare.choose_side", side=side.upper()),
             filetypes=[
                 (t("gui.filetypes.dump"), "*.bin *.eep *.dflash *.dump *.eee *.rom"),
@@ -227,7 +233,7 @@ class CompareWindow:
             messagebox.showerror(
                 t("gui.dialog.cannot_open"),
                 t("gui.compare.open_error", path=file_path, error=exc),
-                parent=self.top,
+                parent=self.shell,
             )
             return False
         self._set_side(side, data, file_path.name, file_path)
@@ -243,7 +249,7 @@ class CompareWindow:
                 messagebox.showinfo(
                     t("gui.compare.no_conversion_title"),
                     t("gui.compare.no_conversion"),
-                    parent=self.top,
+                    parent=self.shell,
                 )
             return False
         source = getattr(self.app, "path", None)
@@ -305,7 +311,7 @@ class CompareWindow:
         self.select_range(self.selected - 1)
 
     def _build(self) -> None:
-        header = tk.Frame(self.top, bg="#1e3a5f", height=56)
+        header = tk.Frame(self.frame, bg="#1e3a5f", height=56)
         header.pack(fill="x")
         header.pack_propagate(False)
         self.title_label = tk.Label(header, text=t("gui.compare.title"), bg="#1e3a5f", fg="#f7f4ef",
@@ -317,7 +323,7 @@ class CompareWindow:
         )
         self.subtitle_label.pack(fill="x", padx=16)
 
-        body = tk.Frame(self.top, bg="#e6edf3")
+        body = tk.Frame(self.frame, bg="#e6edf3")
         body.pack(fill="both", expand=True, padx=12, pady=10)
 
         card = tk.Frame(body, bg="#ffffff", highlightthickness=1, highlightbackground="#c5d0da")
@@ -363,7 +369,7 @@ class CompareWindow:
         self._build_hex(hex_card)
         self._build_ranges(range_card)
 
-        status_bar = tk.Frame(self.top, bg="#d5dee6", height=26)
+        status_bar = tk.Frame(self.frame, bg="#d5dee6", height=26)
         status_bar.pack(fill="x", side="bottom")
         self.status = tk.StringVar(value=t(self._status_key))
         tk.Label(status_bar, textvariable=self.status, bg="#d5dee6", fg="#1c2833",
@@ -511,6 +517,10 @@ class CompareWindow:
             self.name_b = name
         variable.set(t("gui.compare.file_bytes", name=shorten_middle(name, 48), n=len(data)))
 
+    def _prefill_if_empty(self) -> None:
+        if self.data_b is None:
+            self._prefill_last_conversion()
+
     def _prefill_last_conversion(self) -> None:
         if self.use_last_conversion("b", quiet=True):
             self._note("gui.compare.prefill")
@@ -536,15 +546,15 @@ class CompareWindow:
             return
         self.summary.configure(text=t("gui.compare.comparing"), fg="#1c2833")
         try:
-            self.top.configure(cursor="watch")
-            self.top.update_idletasks()
+            self.shell.configure(cursor="watch")
+            self.shell.update_idletasks()
         except tk.TclError:
             pass
         try:
             result = compare_bytes(self.data_a, self.data_b)
         finally:
             try:
-                self.top.configure(cursor="")
+                self.shell.configure(cursor="")
             except tk.TclError:
                 pass
         self.result = result
@@ -839,7 +849,7 @@ class CompareWindow:
             messagebox.showinfo(
                 t("gui.compare.nothing_title"),
                 t("gui.compare.nothing_body"),
-                parent=self.top,
+                parent=self.shell,
             )
             return
         if kind == "csv":
@@ -851,7 +861,7 @@ class CompareWindow:
             types = [(t("gui.compare.filetype_text"), "*.txt")]
             initial = t("gui.compare.initial_text")
         selected = filedialog.asksaveasfilename(
-            parent=self.top,
+            parent=self.shell,
             title=t("gui.compare.export_title"),
             initialfile=initial,
             defaultextension=extension,
@@ -865,7 +875,7 @@ class CompareWindow:
         try:
             self.export_to(path, kind)
         except OSError as exc:
-            messagebox.showerror(t("gui.dialog.cannot_save"), str(exc), parent=self.top)
+            messagebox.showerror(t("gui.dialog.cannot_save"), str(exc), parent=self.shell)
 
     def _report_name(self, side: str) -> str:
         path = self.path_a if side == "a" else self.path_b
@@ -885,15 +895,21 @@ class CompareWindow:
         self.next_btn.state(nav_state)
 
     def _on_window_configure(self, event) -> None:
-        if event.widget is not self.top:
+        if event.widget is not self.frame:
             return
         width = event.width - 48
         if width < 320:
             width = 320
         self.summary.configure(wraplength=width)
 
-    def _swallow(self, _event):
-        return "break"
+    def _bind_keys(self) -> None:
+        for widget in (self.frame, self.hex_a, self.hex_b, self.head_a, self.head_b, self.range_view):
+            widget.bind("<F3>", self._on_next_key)
+            widget.bind("<Shift-F3>", self._on_prev_key)
+            widget.bind("<Next>", self._on_page_down)
+            widget.bind("<Prior>", self._on_page_up)
+            widget.bind("<Home>", self._on_home)
+            widget.bind("<End>", self._on_end)
 
     def _on_next_key(self, _event):
         self.next_difference()

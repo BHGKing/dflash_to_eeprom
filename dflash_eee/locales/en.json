@@ -317,5 +317,7 @@
   "gui.compare.nothing_body": "Compare two files first.",
   "gui.compare.initial_text": "compare.txt",
   "gui.compare.initial_csv": "compare.csv",
-  "gui.compare.choose_side": "Choose file %(side)s"
+  "gui.compare.choose_side": "Choose file %(side)s",
+  "gui.tab.convert": "Convert",
+  "gui.tab.compare": "Compare"
 }

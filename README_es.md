@@ -76,7 +76,7 @@ python3 gui.py dump.bin
 
 Sirve cuando hay que revisar dos binarios: la EEPROM original y el archivo que acaba de armar esta herramienta, un volcado de antes de la reparación y la lectura después de programar, o dos BCM. Comparar solo lee los archivos.
 
-En la ventana, abra **Herramientas → Comparar archivos...**. Elija el archivo A y el archivo B con Examinar. **Última conversión** llena ese lado con la imagen EEPROM que está en la ventana principal, aunque todavía no se haya guardado. Si ya hay una conversión en pantalla, el archivo B empieza como esa imagen.
+En la ventana, elija la pestaña **Comparar**, o use **Herramientas → Comparar archivos...**. El menú solo cambia a esa pestaña. La pestaña **Convertir** sigue siendo la conversión del D-Flash. Elija el archivo A y el archivo B con Examinar. **Última conversión** llena ese lado con la imagen EEPROM de Convertir, aunque todavía no se haya guardado. Si ya hay una conversión, el archivo B empieza como esa imagen.
 
 Las dos vistas hex quedan en el mismo offset. Cada fila es el offset, 16 bytes en hex y la columna ASCII. Los bytes que difieren van resaltados. Si un archivo es más largo, el lado corto muestra `--` en lo que falta. Debajo se listan los rangos contiguos de diferencias. Un clic salta a ese rango. **Diferencia anterior** y **Diferencia siguiente** (F3 y Shift+F3) hacen lo mismo. **Solo filas con diferencias** oculta las filas iguales.
 

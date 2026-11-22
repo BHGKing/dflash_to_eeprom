@@ -80,13 +80,13 @@ python3 gui.py dump.bin
 
 Use this when two binaries need to be checked against each other: the original EEPROM read and the file this tool just built, a dump from before a repair and the read-back after programming, or two BCMs. Compare only reads the files.
 
-In the desktop window, open **Tools → Compare files...**. Choose file A and file B with Browse. **Last conversion** fills that side with the EEPROM image currently in the main window, including an image that has not been saved yet. If a conversion is already on screen, file B starts as that image.
+In the desktop window, select the **Compare** tab, or use **Tools → Compare files...**. The menu item only switches to that tab. The **Convert** tab stays the D-Flash conversion. Choose file A and file B with Browse. **Last conversion** fills that side with the EEPROM image from Convert, including an image that has not been saved yet. If a conversion is already done, file B starts as that image.
 
 The two hex views stay locked on the same offset. Each row is the offset, 16 hex bytes, and the ASCII column. Bytes that differ are highlighted. When one file is longer, the shorter side shows `--` for the missing tail. Under the views, every contiguous run of differences is listed. Click a run to jump there. **Previous difference** and **Next difference** (F3 and Shift+F3) do the same. **Only differing rows** hides rows that match, which is the useful view when a 32 KB dump has a handful of changed bytes.
 
 The summary gives both sizes, whether the files are identical, how many bytes and ranges differ, and the SHA-256 of each file. A file of a few megabytes stays responsive: only the rows on screen are drawn.
 
-**Export text...** writes the summary and the full hex of each range. **Export CSV...** writes the same summary as fields, then one row per range: `offset,length,hex_a,hex_b`. Those CSV column names stay in English. The window follows **Language / Idioma**. `--lang es` prints the summary and the text report in Spanish. SHA-256, offset, hex, and the side letters A and B stay as those terms.
+**Export text...** writes the summary and the full hex of each range. **Export CSV...** writes the same summary as fields, then one row per range: `offset,length,hex_a,hex_b`. Those CSV column names stay in English. Both tabs follow **Language / Idioma**. `--lang es` prints the summary and the text report in Spanish. SHA-256, offset, hex, and the side letters A and B stay as those terms.
 
 ```bash
 python3 dflash_to_eee.py compare original.bin readback.bin

@@ -135,7 +135,7 @@ class App(object):
     def __init__(self, root):
         ensure_language()
         self.root = root
-        self.root.geometry("1180x820")
+        self.root.geometry("1280x860")
         self.root.minsize(980, 680)
         self.root.configure(bg="#e6edf3")
         self.ui = _font(UI, 11)
@@ -180,6 +180,13 @@ class App(object):
                   foreground=[("disabled", "#f4f7fa")])
         style.configure("TButton", padding=(12, 6))
         style.configure("TCombobox", padding=4)
+        style.configure("TNotebook", background="#e6edf3", borderwidth=0)
+        style.configure("TNotebook.Tab", padding=(16, 6), font=self.ui)
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", "#ffffff"), ("!selected", "#d5dee6")],
+            foreground=[("selected", "#1e3a5f")],
+        )
 
     def _build(self):
         header = tk.Frame(self.root, bg="#1e3a5f", height=74)
@@ -198,7 +205,18 @@ class App(object):
                                      anchor="w", justify="left", wraplength=1120)
         self.safety_label.pack(fill="x", padx=18, pady=8)
 
-        body = ttk.Frame(self.root, padding=(14, 12, 14, 6))
+        # Convert stays the first page. Other tools append their own page with
+        # add_page(); they do not rebuild this notebook. Compare does that.
+        # A module-info page can do the same and land beside Compare.
+        self._pages = {}
+        self._page_shown = {}
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill="both", expand=True, padx=10, pady=(8, 0))
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_page_shown)
+        convert = ttk.Frame(self.notebook)
+        self.add_page("convert", convert, "gui.tab.convert")
+
+        body = ttk.Frame(convert, padding=(14, 12, 14, 6))
         body.pack(fill="both", expand=True)
         body.columnconfigure(0, weight=1)
         body.columnconfigure(1, weight=1)
@@ -219,11 +237,11 @@ class App(object):
                                    font=self.ui_small, anchor="w")
         self.free_label.pack(fill="x", padx=12, pady=3)
 
-        self.root.bind("<Control-o>", lambda _event: self.browse())
-        self.root.bind("<Control-O>", lambda _event: self.browse())
-        self.root.bind("<Control-s>", lambda _event: self.save())
-        self.root.bind("<Control-S>", lambda _event: self.save())
-        self.root.bind("<Control-Return>", lambda _event: self.convert())
+        self.root.bind("<Control-o>", self._shortcut_open)
+        self.root.bind("<Control-O>", self._shortcut_open)
+        self.root.bind("<Control-s>", self._shortcut_save)
+        self.root.bind("<Control-S>", self._shortcut_save)
+        self.root.bind("<Control-Return>", self._shortcut_convert)
         self._apply_language()
 
     def _menu(self):
@@ -283,14 +301,75 @@ class App(object):
         self.save_button.configure(text=t("gui.button.save"))
         self._refresh_drop_hint()
         self._menu()
-        # The menu bar is rebuilt on every language change. Compare adds
-        # Tools after that, and an open compare window picks up the new text.
+        # The menu bar is rebuilt on every language change. Each extra tool
+        # reattaches its menu item here and refreshes its own page.
         attach_compare(self)
-        window = getattr(self, "_compare_window", None)
-        if window is not None and window.is_open():
-            window.refresh_language()
+        self._refresh_page_titles()
         self._show_profile()
         self._refresh_result_text()
+
+    def add_page(self, page_id, frame, title_key, on_show=None):
+        """Append a notebook page.
+
+        ``page_id`` is a stable name (``convert``, ``compare``, ``module_info``).
+        ``title_key`` is a catalog key. ``on_show`` runs when that page is selected.
+        Calling this again with the same id does not add a second tab.
+        """
+
+        if page_id in self._pages:
+            return
+        self._pages[page_id] = (frame, title_key)
+        if on_show is not None:
+            self._page_shown[page_id] = on_show
+        self.notebook.add(frame, text=t(title_key))
+
+    def show_page(self, page_id):
+        """Select a page by the id passed to :meth:`add_page`."""
+
+        frame, _title_key = self._pages[page_id]
+        self.notebook.select(frame)
+
+    def current_page(self):
+        """Id of the page currently selected, or ``convert`` when unknown."""
+
+        try:
+            selected = self.notebook.select()
+        except tk.TclError:
+            return "convert"
+        for page_id, (frame, _title_key) in self._pages.items():
+            if str(frame) == str(selected):
+                return page_id
+        return "convert"
+
+    def _refresh_page_titles(self):
+        for frame, title_key in self._pages.values():
+            try:
+                self.notebook.tab(frame, text=t(title_key))
+            except tk.TclError:
+                pass
+
+    def _on_page_shown(self, _event=None):
+        hook = self._page_shown.get(self.current_page())
+        if hook is not None:
+            hook()
+
+    def _shortcut_open(self, _event=None):
+        if self.current_page() == "compare":
+            return "break"
+        self.browse()
+        return "break"
+
+    def _shortcut_save(self, _event=None):
+        if self.current_page() == "compare":
+            return "break"
+        self.save()
+        return "break"
+
+    def _shortcut_convert(self, _event=None):
+        if self.current_page() == "compare":
+            return "break"
+        self.convert()
+        return "break"
 
     def _card(self, parent, title_key):
         frame = tk.Frame(parent, bg="#ffffff", highlightthickness=1, highlightbackground="#c5d0da")
