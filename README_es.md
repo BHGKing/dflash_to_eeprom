@@ -58,7 +58,7 @@ python3 -m pip install -r requirements.txt
 python3 gui.py
 ```
 
-Abra un volcado D-Flash con Examinar o soltando el archivo en la ventana. Elija el módulo. Convierta. Lea el panel de validación: ahí se señalan el tamaño incorrecto, la falta de sectores `0xFACF`, los códigos de registro malos y las direcciones que se pasan de la EEE. La vista hex es el archivo que está a punto de programar. Guardar escribe solo ese archivo. Si la conversión reportó errores, Guardar pregunta antes de escribir.
+La ventana es un cuaderno. **Convertir** es la conversión del D-Flash. **Comparar** revisa dos archivos. **Info del módulo** lee VIN, kilometraje y llaves de la imagen EEPROM. Abra un volcado D-Flash con Examinar o soltando el archivo en la ventana. Elija el módulo. Convierta. Lea el panel de validación: ahí se señalan el tamaño incorrecto, la falta de sectores `0xFACF`, los códigos de registro malos y las direcciones que se pasan de la EEE. La vista hex es el archivo que está a punto de programar. Guardar escribe solo ese archivo. Si la conversión reportó errores, Guardar pregunta antes de escribir. Un archivo que ya tiene el tamaño EEPROM del módulo se muestra directo, sin conversión.
 
 También puede arrancar con un archivo ya elegido:
 
@@ -95,6 +95,20 @@ El código de salida es 0 si son idénticos, 1 si difieren y 2 si un archivo no 
 ### Ejecutable de Windows
 
 `build.cmd` instala PyInstaller y tkinterdnd2, y luego arma `dist\dflash_to_eee.exe` desde `dflash_to_eee.spec`. El workflow de GitHub Actions `windows-exe` corre las pruebas en Windows y sube ese ejecutable como artefacto. Una etiqueta de versión publica el mismo exe en la página de Releases; vea Publicar. Los perfiles sueltos se pueden dejar en una carpeta `profiles` junto al exe. Los catálogos de idioma viajan dentro del exe.
+
+## Info del módulo, llaves y virginize
+
+La pestaña **Info del módulo** queda junto a Convertir y Comparar. Lee la imagen EEPROM de la última conversión, o un archivo que ya tenga el tamaño EEPROM de ese módulo.
+
+**Confirmado** significa que el perfil nombra el offset. En el BMW FRM3 eso es el VIN en `0xFD3`, las fechas de producción y de programación, y los números HW-NR, SW-NR, ZB-NR y S del decodificador original. Si esos bytes de VIN no pasan el dígito ISO 3779, la pestaña lo dice. No los llama un VIN válido.
+
+**Detectado** significa un patrón, no una dirección publicada. La búsqueda se queda con un VIN de 17 caracteres solo cuando el identificador del fabricante está en la lista de ese perfil y el dígito de control coincide. Se listan todas las copias, y la pestaña dice si coinciden entre sí. Los números de parte Jaguar con la forma `CX23-14D628-AE` se detectan igual. El kilometraje y la codificación de opciones no están en los mapas publicados que se usaron aquí, así que la pestaña dice que faltan.
+
+El FRM3 es un módulo de piso, no un inmovilizador, así que no tiene ranuras de llave. Aquí no hay un mapa publicado de ranuras para la EEPROM del BCM del Jaguar XF, así que la pestaña no inventa ranuras. Las llaves Jaguar se programan con SDD. El KVM/RFA es el módulo de llave, y ese perfil sigue experimental.
+
+**Herramientas → Virginize...** escribe un archivo nuevo. No modifica el original. La confirmación lista cada rango que cambia (offset, largo, bytes viejos, bytes nuevos). El BCM del Jaguar XF borra a `0xFF` solo las copias de VIN detectadas. Los números de parte, los bytes de llave y las zonas desconocidas quedan. No se reescribe ningún checksum, porque no hay uno publicado. Sigue haciendo falta JLR SDD, y el resultado hay que comprobarlo en el banco antes de fiarse. El virginize del BMW FRM3 se rechaza: las notas públicas dan la dirección del VIN y dicen que esta herramienta no borra kilometraje ni checksums, y los scripts de programador que ofrecen una opción virgin no publican los bytes.
+
+La bitácora opcional de D-Flash es un archivo que esta herramienta puede reproducir. El camino de escritura soportado sigue siendo: fijar DFPART y ERPART, y programar la imagen EEPROM en la EEE.
 
 ## Comprobar la descarga / Windows SmartScreen
 
@@ -163,6 +177,20 @@ python3 dflash_to_eee.py --lang es compare original.bin readback.bin
 
 `--strict` sale con código 2 cuando el largo no es el tamaño de D-Flash del perfil o la bitácora se ve corrupta. La forma de dos argumentos no lo hace: un archivo más largo se recorre igual desde sus primeros 32 KB, que es lo que hacía el script original.
 
+`compare` revisa dos volcados y sale con código 1 cuando los bytes difieren. El detalle está en Comparar dos volcados.
+
+`info` lee una imagen EEPROM, o un volcado D-Flash que el perfil elegido puede reproducir. `keys` imprime la parte de llaves de esa lectura. `virginize` escribe un archivo EEPROM nuevo y nunca sobrescribe el origen.
+
+```bash
+python3 dflash_to_eee.py info eeprom.bin --profile jlr_xf_bcm
+python3 dflash_to_eee.py --profile bmw_frm3 info eeprom.bin --json
+python3 dflash_to_eee.py keys eeprom.bin --profile jlr_xf_bcm
+python3 dflash_to_eee.py virginize eeprom.bin virgin.bin --profile jlr_xf_bcm --report cambios.txt
+python3 dflash_to_eee.py virginize eeprom.bin virgin.bin --profile jlr_xf_bcm --journal virgin.dflash
+```
+
+`--json` imprime un objeto JSON en la salida estándar. `--journal` es opcional. Empaqueta una bitácora de D-Flash que esta herramienta puede reproducir. No es el procedimiento de reparación, y escribir ese archivo sobre el D-Flash crudo no se ha probado en un carro. Programe la imagen EEPROM en la partición EEE después de fijar DFPART y ERPART.
+
 Desde Python:
 
 ```python
@@ -206,6 +234,15 @@ Los perfiles incluidos viven en `dflash_eee/profiles.py`. Un taller también pue
 
 `eee_size` debe ser igual a `erpart_pages * 256` cuando marque la partición como confirmada. Se revisa la regla de AN3490: `(128 - DFPART) / ERPART` al menos 8, y al menos 12 sectores de EEE cuando ERPART es 1. No agregue desplazamientos de campos a menos que los haya medido en volcados de ese módulo. Los desplazamientos del VIN y del número de parte del FRM3 no son un mapa genérico.
 
+Claves opcionales de lectura. Si no están, no se usan:
+
+- `scan_vin` y `vin_wmis`: busca un VIN de 17 caracteres cuyo inicio esté en la lista y cuyo dígito ISO 3779 coincida. Los hallazgos se marcan como detectados.
+- `scan_part_numbers`: busca la forma publicada de Jaguar `CX23-14D628-AE`. Los hallazgos se marcan como detectados.
+- `regions`: lista de `{label, offset, length, encoding, confidence, clear_on_virgin, checksum}`. `encoding` es `ascii`, `uint-be`, `uint-le` o `hex`. Un archivo externo no puede marcar una región como confirmada; `confirmed` se guarda como detected. `checksum` es `{algorithm, offset, start, length}` con `algorithm` `sum8`, `xor8` o `sum16be`. Los bytes guardados deben quedar fuera del tramo cubierto.
+- `keys_status`: `not_applicable`, `no_map` o `layout`.
+- `key_layout`: `{base, count, stride, id_offset, id_length, blank, checksum, confidence}`. `blank` es hexadecimal. El checksum es relativo a cada ranura. Un layout externo se guarda como detected. La ventana solo muestra las ranuras. No las edita.
+- `virginize`: `unsupported`, `clear_vin` o `clear_vin_and_keys`. Borrar ranuras de llave exige un layout y un checksum, y ese checksum se recalcula después del borrado. `clear_vin` pone en `0xFF` las copias de VIN detectadas y cualquier región con `clear_on_virgin`. No inventa un checksum.
+
 El texto que usted escriba en el JSON se muestra tal cual. La herramienta no lo traduce.
 
 ## Pruebas
@@ -216,7 +253,7 @@ python3 -m pytest -q
 
 `ci/input/dflash` se recorre con el comando original de dos argumentos. Donde `ci/input/eee` tiene una imagen pareja, los bytes deben coincidir. Las líneas del registro (VIN, fechas, números de parte, advertencias, la excepción de archivo corto) deben coincidir con `ci/input/logs`. Las bitácoras sintéticas cubren el orden de sobrescritura, la rareza del registro vacío, comandos desconocidos, un archivo corto, un layout no reconocido y el perfil de 2 KB.
 
-`ci/run_ci.sh` corre ese mismo juego.
+`ci/run_ci.sh` corre ese mismo juego. `tests/test_module_info.py` arma imágenes EEPROM sintéticas para la búsqueda de VIN, el layout de ranuras, virginize y la ida y vuelta de la bitácora. No lee volcados de clientes.
 
 ## Carga web
 
