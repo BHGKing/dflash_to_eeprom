@@ -23,6 +23,17 @@ except Exception:
     # Browse still works when tkinterdnd2 is not installed.
     pass
 
+# Message catalogs. PyInstaller unpacks datas next to the code in _MEIPASS,
+# which is where dflash_eee.i18n looks when the exe is frozen.
+try:
+    _spec_root = os.path.dirname(os.path.abspath(SPEC))
+except NameError:
+    _spec_root = os.path.abspath(".")
+_locales = os.path.join(_spec_root, "dflash_eee", "locales")
+if not os.path.isdir(_locales):
+    raise SystemExit("message catalogs not found: %s" % _locales)
+datas.append((_locales, os.path.join("dflash_eee", "locales")))
+
 block_cipher = None
 
 a = Analysis(

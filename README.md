@@ -4,6 +4,8 @@
 
 dflash_to_eee is free, open-source software under the BSD-3-Clause license. The license allows other people to redistribute the program, including for a fee. The official version is free. If someone charged you for it, you paid for something you could get free from the official page: https://github.com/BHGKing/dflash_to_eeprom/releases
 
+[Español](README_es.md)
+
 Rebuild the emulated EEPROM (EEE) of a Freescale/NXP S12XE microcontroller from a raw D-Flash dump. The original tool, by Ben van Leeuwen Autotechniek, repaired BMW FRM3 modules whose MC9S12XEQ384 had lost its EEPROM partition. This version keeps that decoder, turns it into a library the command line, desktop window and web upload all share, and adds module profiles for the other S12XE layouts that public repair notes actually describe.
 
 BSD-3-Clause. Copyright 2017-2018 Ben van Leeuwen Autotechniek. Copyright 2026 Jose.
@@ -133,6 +135,18 @@ Creating the release in the GitHub UI does the same work. Open **Releases → Dr
 
 Tags must look like `v1.0.0`. A suffix such as `v1.0.0-rc.1` is published as a pre-release. To rebuild a tag that already exists, open **Actions → Release → Run workflow** and enter that tag. The new exe and checksum replace the previous files. The notes are rewritten in the same way, so the SHA-256 in the verify section matches the file that was just built.
 
+## Language
+
+The first time the window opens it follows the system language. A Spanish locale (`es`, `es_MX`, `es_ES`, and the rest) opens in Spanish. **Language / Idioma** switches between English and Español and remembers the choice. The window updates immediately. The file is `%APPDATA%\dflash_to_eee\config.json` on Windows and `~/.config/dflash_to_eee/config.json` elsewhere. The first-run notice uses that same file.
+
+On the command line, `--lang es` or `--lang en` selects the language for that run. With no flag, the tool follows `LC_ALL`, then `LC_MESSAGES`, then `LANG`, then the saved menu choice, then the system language. The original two-argument command keeps the 2017 English log (VIN, part numbers, journal warnings) so it still matches `ci/input/logs`.
+
+```bash
+python3 dflash_to_eee.py --lang es --list-profiles
+```
+
+To add a language, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Command line
 
 The two-argument form is the original FRM3 command. Output bytes and log text match the samples in `ci/`.
@@ -140,7 +154,7 @@ The two-argument form is the original FRM3 command. Output bytes and log text ma
 ```bash
 python3 dflash_to_eee.py dflash.bin eeprom.bin
 python3 dflash_to_eee.py --list-profiles
-python3 dflash_to_eee.py --profile jlr_xf_bcm dflash.bin eeprom.bin
+python3 dflash_to_eee.py --lang es --profile jlr_xf_bcm dflash.bin eeprom.bin
 python3 dflash_to_eee.py --profile bmw_frm3 --strict dflash.bin eeprom.bin
 ```
 

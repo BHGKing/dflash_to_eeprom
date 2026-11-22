@@ -10,7 +10,8 @@ import re
 from urllib.parse import unquote, urlparse
 
 from dflash_eee.converter import ConversionResult, Issue
-from dflash_eee.profiles import ModuleProfile
+from dflash_eee.i18n import t
+from dflash_eee.profiles import ModuleProfile, profile_text
 
 
 def parse_drop_paths(data: str) -> list[str]:
@@ -45,17 +46,26 @@ def size_issue(nbytes: int, profile: ModuleProfile) -> Issue | None:
     if not profile.conversion_enabled:
         return None
     needed = profile.scan_offset + profile.scan_sectors * profile.layout.sector_size
+    title = profile_text(profile, "title")
     if nbytes < needed:
         return Issue(
             "error",
-            "Wrong size: %d bytes. %s needs %d bytes."
-            % (nbytes, profile.title, profile.dflash_size),
+            t(
+                "report.size.short",
+                nbytes=nbytes,
+                title=title,
+                needed=profile.dflash_size,
+            ),
         )
     if nbytes != profile.dflash_size:
         return Issue(
             "warning",
-            "Wrong size: %d bytes. %s expects %d. Extra bytes are ignored."
-            % (nbytes, profile.title, profile.dflash_size),
+            t(
+                "report.size.extra",
+                nbytes=nbytes,
+                title=title,
+                expected=profile.dflash_size,
+            ),
         )
     return None
 
@@ -79,16 +89,32 @@ def outcome(result: ConversionResult) -> tuple[str, str]:
     """Short headline and a tone name: ok, warning or error."""
 
     if result.image is None:
-        return "Conversion failed", "error"
+        return t("report.outcome.failed"), "error"
     if result.errors or result.corrupt:
-        return "Converted with errors - read them before saving", "error"
+        return t("report.outcome.errors"), "error"
     if result.warnings:
-        return "Converted with warnings", "warning"
-    return "Conversion succeeded", "ok"
+        return t("report.outcome.warnings"), "warning"
+    return t("report.outcome.ok"), "ok"
+
+
+_FIELD_LABELS = {
+    "Production date": "field.production_date",
+    "Programming date": "field.programming_date",
+}
+
+_FIELD_CAPTIONS = {
+    "Hardware part number": "field.hardware_part",
+    "Updated part number": "field.updated_part",
+    "Original part number": "field.original_part",
+}
 
 
 def display_field(label: str, value: str) -> str:
-    """Hide embedded NULs and non-text bytes in a field shown to a tech."""
+    """Hide embedded NULs and non-text bytes in a field shown to a tech.
+
+    VIN, HW-NR and the other register names stay as written. The date names
+    and the parenthetical part captions are translated.
+    """
 
     shown = []
     for char in value:
@@ -97,7 +123,28 @@ def display_field(label: str, value: str) -> str:
             shown.append(char)
         else:
             shown.append(".")
-    return "%s: %s" % (label, "".join(shown))
+    text = "".join(shown)
+    label_key = _FIELD_LABELS.get(label)
+    label_out = t(label_key) if label_key else label
+    if " (" in text and text.endswith(")"):
+        main, _, paren = text.rpartition(" (")
+        caption = paren[:-1]
+        caption_key = _FIELD_CAPTIONS.get(caption)
+        if caption_key:
+            text = "%s (%s)" % (main, t(caption_key))
+    return "%s: %s" % (label_out, text)
+
+
+def _count(stem: str, n: int, **kwargs: object) -> str:
+    suffix = "one" if n == 1 else "many"
+    return t("%s.%s" % (stem, suffix), n=n, **kwargs)
+
+
+_END_REASONS = {
+    "new_blocks": "report.reason.new_blocks",
+    "last_block": "report.reason.last_block",
+    "longest_empty": "report.reason.longest_empty",
+}
 
 
 def report_lines(result: ConversionResult, extra: list[Issue] | None = None) -> list[tuple[str, str]]:
@@ -123,27 +170,31 @@ def report_lines(result: ConversionResult, extra: list[Issue] | None = None) -> 
         seen.add(issue.text)
     invalid = result.stats.get("invalid", 0)
     if invalid:
-        rows.append(("warning" if not result.corrupt else "error",
-                     "%d sector(s) are not S12XE EEE records." % invalid))
+        rows.append((
+            "warning" if not result.corrupt else "error",
+            _count("report.sectors_not_eee", invalid),
+        ))
     unknown_cmds = sum(1 for issue in result.issues if issue.text.startswith("Unknown CMD type"))
     if unknown_cmds:
-        rows.append(("error", "%d record(s) have an unknown command code." % unknown_cmds))
+        rows.append(("error", _count("report.unknown_cmd", unknown_cmds)))
     if result.image is not None:
-        rows.append(("info", "EEPROM image: %d bytes." % len(result.image)))
+        rows.append(("info", t("report.image_bytes", n=len(result.image))))
     if result.endblock is not None:
-        rows.append(("info", "Journal ends at sector %d. %s" % (result.endblock, result.stats.get("endblock_reason", ""))))
+        reason_key = _END_REASONS.get(result.endblock_reason)
+        reason = t(reason_key) if reason_key else str(result.stats.get("endblock_reason", ""))
+        rows.append(("info", t("report.journal_end", n=result.endblock, reason=reason)))
     counts = result.stats
     if counts:
         rows.append((
             "info",
-            "Sectors: %d valid, %d current, %d ready, %d erased, %d unrecognized. Records applied: %d."
-            % (
-                counts.get("valid", 0),
-                counts.get("last", 0),
-                counts.get("new", 0),
-                counts.get("empty", 0),
-                counts.get("invalid", 0),
-                counts.get("records", 0),
+            t(
+                "report.counts",
+                valid=counts.get("valid", 0),
+                last=counts.get("last", 0),
+                ready=counts.get("new", 0),
+                erased=counts.get("empty", 0),
+                unrecognized=counts.get("invalid", 0),
+                records=counts.get("records", 0),
             ),
         ))
     for label, value in result.fields:
