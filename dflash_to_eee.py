@@ -42,7 +42,7 @@ Historical invocation (BMW / Mini FRM3, MC9S12XEQ384)::
 Other modules::
 
     python3 dflash_to_eee.py --list-profiles
-    python3 dflash_to_eee.py --profile jlr_xf_bcm dflash.bin eeprom.bin
+    python3 dflash_to_eee.py --lang es --profile jlr_xf_bcm dflash.bin eeprom.bin
 """
 
 import sys

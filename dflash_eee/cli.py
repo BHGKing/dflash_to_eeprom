@@ -17,7 +17,14 @@ import sys
 
 from dflash_eee import __version__
 from dflash_eee.converter import DFlashConverter, convert_bytes, render_info
-from dflash_eee.profiles import ProfileError, default_extra_dirs, discover_profiles, get_profile
+from dflash_eee.i18n import LanguageError, init_language, t
+from dflash_eee.profiles import (
+    ProfileError,
+    default_extra_dirs,
+    discover_profiles,
+    get_profile,
+    profile_text,
+)
 from dflash_eee.report import report_lines, size_issue
 
 
@@ -39,33 +46,45 @@ def configure_logging() -> None:
     root.setLevel(logging.INFO)
 
 
+def _historical(argv: list[str]) -> bool:
+    return len(argv) == 2 and not argv[0].startswith("-") and not argv[1].startswith("-")
+
+
+def _peek_lang(argv: list[str]) -> str | None:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--lang", default=None)
+    known, _rest = parser.parse_known_args(argv)
+    return known.lang
+
+
 def _print_profiles(profiles) -> None:
-    print("dflash-to-eeprom %s" % __version__)
+    print(t("cli.version_line", version=__version__))
     print("")
     for profile in profiles:
-        print("%-20s %-14s %s" % (profile.id, profile.status_label, profile.title))
-        print("  MCU: %s" % profile.mcu)
+        print("%-20s %-14s %s" % (profile.id, profile.status_label, profile_text(profile, "title")))
+        print("  " + t("cli.mcu", mcu=profile.mcu))
         if profile.conversion_enabled:
-            print("  D-Flash %d bytes -> EEE %d bytes" % (profile.dflash_size, profile.eee_size))
+            print("  " + t("cli.sizes", dflash=profile.dflash_size, eee=profile.eee_size))
         else:
-            print("  Conversion disabled")
-        if profile.assumptions:
-            print("  Note: %s" % profile.assumptions)
+            print("  " + t("cli.disabled"))
+        assumptions = profile_text(profile, "assumptions")
+        if assumptions:
+            print("  " + t("cli.note", text=assumptions))
         print("")
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dflash_to_eee",
-        description="Rebuild an S12XE emulated EEPROM image from a D-Flash dump.",
+        description=t("cli.description"),
     )
-    parser.add_argument("--profile", default="bmw_frm3", help="Module profile id (default: bmw_frm3)")
-    parser.add_argument("--list-profiles", action="store_true", help="List built-in and drop-in profiles")
-    parser.add_argument("--strict", action="store_true",
-                        help="Exit with status 2 when the dump size, layout or records look wrong")
-    parser.add_argument("--version", action="store_true", help="Print the version and exit")
-    parser.add_argument("dflash", nargs="?", help="D-Flash dump")
-    parser.add_argument("eeprom", nargs="?", help="EEPROM image to write")
+    parser.add_argument("--lang", default=None, help=t("cli.help.lang"))
+    parser.add_argument("--profile", default="bmw_frm3", help=t("cli.help.profile"))
+    parser.add_argument("--list-profiles", action="store_true", help=t("cli.help.list"))
+    parser.add_argument("--strict", action="store_true", help=t("cli.help.strict"))
+    parser.add_argument("--version", action="store_true", help=t("cli.help.version"))
+    parser.add_argument("dflash", nargs="?", help=t("cli.help.dflash"))
+    parser.add_argument("eeprom", nargs="?", help=t("cli.help.eeprom"))
     return parser
 
 
@@ -75,27 +94,36 @@ def main(argv: list[str] | None = None) -> int:
         argv = sys.argv[1:]
 
     # Historical two-argument form. No extra sentences, so the ci logs match.
-    if len(argv) == 2 and not argv[0].startswith("-") and not argv[1].startswith("-"):
+    # Language is ignored here on purpose: those log lines are the 2017 text.
+    if _historical(argv):
         converter = DFlashConverter(get_profile("bmw_frm3"))
         converter.convert(argv[0], argv[1])
         return 0
 
+    try:
+        init_language(_peek_lang(argv), honor_env=True)
+    except LanguageError as exc:
+        # The requested tag is not a catalog. Say so in the language we can use.
+        init_language(honor_env=True)
+        print(t("cli.err.bad_lang", lang=exc.code, choices="en, es"), file=sys.stderr)
+        return 1
+
     parser = _build_parser()
     args = parser.parse_args(argv)
     if args.version:
-        print("dflash-to-eeprom %s" % __version__)
+        print(t("cli.version_line", version=__version__))
         return 0
 
     profiles, load_errors = discover_profiles(default_extra_dirs())
     for message in load_errors:
-        print("Profile load error: %s" % message, file=sys.stderr)
+        print(t("cli.profile_load_error", message=message), file=sys.stderr)
     if args.list_profiles:
         _print_profiles(profiles)
         return 1 if load_errors else 0
     if not args.dflash or not args.eeprom:
         parser.print_usage(sys.stderr)
-        print("Usage: dflash_to_eee.py <dflash> <eeprom>", file=sys.stderr)
-        print("       dflash_to_eee.py --profile <id> <dflash> <eeprom>", file=sys.stderr)
+        print(t("cli.usage1"), file=sys.stderr)
+        print(t("cli.usage2"), file=sys.stderr)
         return 1
 
     try:
@@ -108,12 +136,12 @@ def main(argv: list[str] | None = None) -> int:
         with open(args.dflash, "rb") as handle:
             data = handle.read()
     except OSError as exc:
-        print("Cannot read %s: %s" % (args.dflash, exc), file=sys.stderr)
+        print(t("cli.cannot_read", path=args.dflash, error=exc), file=sys.stderr)
         return 1
 
     if not profile.conversion_enabled:
-        print(profile.summary, file=sys.stderr)
-        print(profile.write_notes, file=sys.stderr)
+        print(profile_text(profile, "summary"), file=sys.stderr)
+        print(profile_text(profile, "write_notes"), file=sys.stderr)
         return 1
 
     preliminary = size_issue(len(data), profile)
@@ -131,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
         with open(args.eeprom, "wb") as handle:
             handle.write(result.image)
     except OSError as exc:
-        print("Cannot write %s: %s" % (args.eeprom, exc), file=sys.stderr)
+        print(t("cli.cannot_write", path=args.eeprom, error=exc), file=sys.stderr)
         return 1
 
     words = [

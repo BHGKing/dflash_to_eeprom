@@ -19,6 +19,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from dflash_eee.i18n import t
+
 REPOSITORY = "BHGKing/dflash_to_eeprom"
 SOURCE_REPOSITORY_URL = "https://github.com/" + REPOSITORY
 OFFICIAL_RELEASES_URL = SOURCE_REPOSITORY_URL + "/releases"
@@ -212,40 +214,27 @@ def notice_body(copy: LocalCopy, tag: str) -> str:
     """Text for the first-run notice and the Verify this copy dialog."""
 
     lines = [
-        FREE_SOFTWARE_NOTICE,
+        t("gui.free_notice", default=FREE_SOFTWARE_NOTICE),
         "",
-        'Windows may show "Windows protected your PC" the first time you open '
-        "dflash_to_eee.exe. The download is an unsigned open-source build, so "
-        "SmartScreen does not know the publisher. Click More info, then Run anyway, "
-        "only after you have checked the file.",
+        t("gui.verify.smartscreen"),
         "",
     ]
     if copy.kind != "executable":
-        lines.append(
-            "This window is running from a source checkout, not from the published "
-            "dflash_to_eee.exe. There is no downloaded executable to hash. The "
-            "SmartScreen warning applies to the unsigned exe from the Releases page. "
-            "You can read the source at the link below, or build the exe yourself."
-        )
+        lines.append(t("gui.verify.source_checkout"))
         return "\n".join(lines)
-    lines.append("SHA-256 of this executable:")
-    lines.append(copy.sha256 or "(the file could not be read)")
+    lines.append(t("gui.verify.hash_label"))
+    lines.append(copy.sha256 or t("gui.verify.hash_unreadable"))
     if copy.path is not None:
         lines.append(str(copy.path))
     lines.append("")
-    lines.append("Compare it with SHA256SUMS.txt on the release. In PowerShell:")
+    lines.append(t("gui.verify.compare_powershell"))
     lines.append(POWERSHELL_HASH)
     lines.append("")
-    lines.append(
-        "You can also build the program from the published source instead of running the downloaded exe."
-    )
+    lines.append(t("gui.verify.build_yourself"))
     if tag and TAG_RE.fullmatch(tag):
-        lines.append("This copy was built as release %s." % tag)
+        lines.append(t("gui.verify.built_as", tag=tag))
     else:
-        lines.append(
-            "This copy has no release tag embedded. It was not produced by the release workflow, "
-            "so there is no published checksum to select automatically."
-        )
+        lines.append(t("gui.verify.no_tag_embedded"))
     return "\n".join(lines)
 
 
@@ -272,18 +261,15 @@ def status_for_plan(plan: str, tag: str) -> str:
     """Sentence for a plan that does not download, or the in-progress line."""
 
     if plan == "local_only":
-        return "Use Help → Verify this copy to compare this hash with the published checksum."
+        return t("gui.verify.status.local_only")
     if plan == "source":
-        return "Running from source. There is no published executable to compare."
+        return t("gui.verify.status.source")
     if plan == "unreadable":
-        return "Could not check. The running executable could not be read."
+        return t("gui.verify.status.unreadable")
     if plan == "no_tag":
-        return (
-            "Could not check. This copy has no release tag embedded, "
-            "so SHA256SUMS.txt was not downloaded."
-        )
+        return t("gui.verify.status.no_tag")
     if plan == "download":
-        return "Downloading SHA256SUMS.txt for %s..." % tag
+        return t("gui.verify.status.download", tag=tag)
     raise ValueError("unknown verification plan %r" % plan)
 
 
@@ -340,14 +326,14 @@ def verify_release(
             "could_not_check",
             local_hash,
             None,
-            "Could not check. This copy has no SHA-256 to compare.",
+            t("gui.verify.detail.no_hash"),
         )
     if not TAG_RE.fullmatch(tag or ""):
         return VerifyResult(
             "could_not_check",
             local_hash,
             None,
-            "Could not check. This copy has no release tag, so SHA256SUMS.txt was not downloaded.",
+            t("gui.verify.detail.no_tag"),
         )
     opener = urllib.request.urlopen if urlopen is None else urlopen
     try:
@@ -357,8 +343,7 @@ def verify_release(
             "could_not_check",
             local_hash,
             None,
-            "Could not check. SHA256SUMS.txt for %s could not be downloaded. "
-            "Compare the SHA-256 above with the release yourself." % tag,
+            t("gui.verify.detail.download_failed", tag=tag),
         )
     remote = parse_sha256sums(body)
     if remote is None:
@@ -366,22 +351,20 @@ def verify_release(
             "could_not_check",
             local_hash,
             None,
-            "Could not check. SHA256SUMS.txt for %s did not contain a hash for %s."
-            % (tag, EXE_NAME),
+            t("gui.verify.detail.missing_name", tag=tag, name=EXE_NAME),
         )
     if hashes_match(local_hash, remote):
         return VerifyResult(
             "match",
             local_hash.lower(),
             remote,
-            "Match. This file matches SHA256SUMS.txt for %s." % tag,
+            t("gui.verify.detail.match", tag=tag),
         )
     return VerifyResult(
         "mismatch",
         local_hash.lower(),
         remote,
-        "Mismatch. This file is %s. SHA256SUMS.txt for %s publishes %s."
-        % (local_hash.lower(), tag, remote),
+        t("gui.verify.detail.mismatch", actual=local_hash.lower(), tag=tag, remote=remote),
     )
 
 

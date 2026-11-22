@@ -23,7 +23,10 @@ def app():
     if sys.platform != "win32" and not os.environ.get("DISPLAY"):
         pytest.skip("no display")
     tk = pytest.importorskip("tkinter")
+    from dflash_eee.i18n import set_language
     from gui import App
+
+    set_language("en")
 
     try:
         root = tk.Tk()
@@ -142,6 +145,21 @@ def test_verify_from_source_does_not_download(app, monkeypatch):
     app.verify_this_copy()
     assert "source" in app._trust_status.get().lower()
     app._trust_dismiss()
+
+
+def test_gui_language_menu_refreshes_the_window(app):
+    app.change_language("es")
+    assert app.root.title() == "D-Flash a EEPROM - libre y de código abierto"
+    assert app.header_title.cget("text") == "D-Flash a EEPROM - libre y de código abierto"
+    assert app.convert_button.cget("text") == "Convertir a EEPROM"
+    assert app.badge.cget("text") == "Soportado"
+    assert app.profile_var.get() == "BMW / Mini - FRM3 del piso (soportado)"
+    assert "oficial" in app.free_label.cget("text").lower()
+    app.change_language("en")
+    assert app.root.title() == "D-Flash to EEPROM - free & open source"
+    assert app.convert_button.cget("text") == "Convert to EEPROM"
+    assert app.badge.cget("text") == "Supported"
+    assert app.profile_var.get() == "BMW / Mini - FRM3 footwell (supported)"
 
 
 def test_gui_experimental_jaguar_profile_is_labelled(app):

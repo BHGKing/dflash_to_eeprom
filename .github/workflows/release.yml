@@ -75,6 +75,16 @@ jobs:
           DFLASH_RELEASE_COMMIT: ${{ steps.source.outputs.commit }}
         run: python ci/release_publish.py embed
 
+      - name: Check message catalogs are bundled by the spec
+        shell: pwsh
+        run: |
+          foreach ($name in @("en.json", "es.json")) {
+            $path = Join-Path (Get-Location) "dflash_eee\locales\$name"
+            if (-not (Test-Path $path)) { throw "missing $path" }
+          }
+          $spec = Get-Content -Raw "dflash_to_eee.spec"
+          if ($spec -notmatch "locales") { throw "dflash_to_eee.spec does not bundle the locales directory" }
+
       - name: Build the single-file GUI
         run: pyinstaller --noconfirm --clean dflash_to_eee.spec
 
