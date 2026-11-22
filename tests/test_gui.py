@@ -100,13 +100,16 @@ def _tagged(widget, tag):
 
 
 def test_gui_compare_menu_synced_hex_and_export(app, tmp_path):
+    assert app.current_page() == "convert"
     tools = _tools_menu(app)
     assert tools is not None
     assert tools.entrycget(0, "label") == "Compare files..."
     tools.invoke(0)
-    window = app._compare_window
+    window = app.compare_page
+    assert window is app._compare_window
     assert window is not None and window.is_open()
-    window.top.withdraw()
+    assert app.current_page() == "compare"
+    assert "Toplevel" not in [child.winfo_class() for child in app.root.winfo_children()]
     window._page_locked = True
     window.page_rows = 4
 
@@ -134,8 +137,8 @@ def test_gui_compare_menu_synced_hex_and_export(app, tmp_path):
     assert left.splitlines()[0][:8] == right.splitlines()[0][:8]
     assert len(left.splitlines()) <= window.page_rows + 1
 
-    window.top.deiconify()
-    window.top.update()
+    app.root.deiconify()
+    app.root.update()
     bbox = window.range_view.bbox("2.0")
     assert bbox is not None
 
@@ -182,8 +185,10 @@ def test_gui_compare_menu_synced_hex_and_export(app, tmp_path):
     assert len(drawn) == 6
     assert len(drawn) < window.total_rows
 
+    app.root.withdraw()
     window.close()
     assert not window.is_open()
+    assert app.current_page() == "convert"
 
 
 def test_gui_compare_uses_the_last_conversion(app, tmp_path):
@@ -192,7 +197,7 @@ def test_gui_compare_uses_the_last_conversion(app, tmp_path):
     from dflash_eee.compare_view import CompareWindow
 
     window = CompareWindow(app)
-    window.top.withdraw()
+    assert window is app.compare_page
     assert window.data_b == app.result.image
     assert "last conversion" in window.name_b
     assert window.use_last_conversion("a")
@@ -209,7 +214,6 @@ def test_compare_window_follows_the_language(app):
     from dflash_eee.compare_view import CompareWindow
 
     window = CompareWindow(app)
-    window.top.withdraw()
     try:
         app.change_language("es")
         menu = app.root.nametowidget(app.root["menu"])
@@ -219,7 +223,9 @@ def test_compare_window_follows_the_language(app):
                 tools = menu.nametowidget(menu.entrycget(index, "menu"))
         assert tools is not None
         assert tools.entrycget(0, "label") == "Comparar archivos..."
-        assert window.top.title() == "Comparar volcados"
+        assert window.title_label.cget("text") == "Comparar volcados"
+        assert app.notebook.tab(app._pages["compare"][0], "text") == "Comparar"
+        assert app.notebook.tab(app._pages["convert"][0], "text") == "Convertir"
         assert window.prev_btn.cget("text") == "Diferencia anterior"
         assert window.subtitle_label.cget("text").startswith("Hex")
         window.close()
@@ -228,6 +234,22 @@ def test_compare_window_follows_the_language(app):
             window.close()
         app.change_language("en")
     assert app.root.title() == "D-Flash to EEPROM - free & open source"
+
+
+def test_another_page_can_sit_beside_compare(app):
+    import tkinter as tk
+
+    frame = tk.Frame(app.notebook)
+    app.add_page("module_info", frame, "gui.menu.tools")
+    app.add_page("module_info", frame, "gui.menu.tools")
+    labels = [app.notebook.tab(index, "text") for index in range(app.notebook.index("end"))]
+    assert labels == ["Convert", "Compare", "Tools"]
+    app.show_page("module_info")
+    assert app.current_page() == "module_info"
+    app.open_compare()
+    assert app.current_page() == "compare"
+    app.show_page("convert")
+    assert app.current_page() == "convert"
 
 
 def _label_texts(widget):
