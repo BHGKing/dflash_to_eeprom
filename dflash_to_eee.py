@@ -43,6 +43,11 @@ Other modules::
 
     python3 dflash_to_eee.py --list-profiles
     python3 dflash_to_eee.py --lang es --profile jlr_xf_bcm dflash.bin eeprom.bin
+
+Compare two dumps (exit 1 when they differ)::
+
+    python3 dflash_to_eee.py compare original.bin readback.bin
+    python3 dflash_to_eee.py --lang es compare original.bin readback.bin
 """
 
 import sys

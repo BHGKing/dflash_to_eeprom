@@ -53,6 +53,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from dflash_eee import __version__
 from dflash_eee.build_info import COMMIT, RELEASE_TAG
+from dflash_eee.compare_view import attach_compare
 from dflash_eee.converter import convert_bytes
 from dflash_eee.i18n import (
     available_languages,
@@ -282,6 +283,12 @@ class App(object):
         self.save_button.configure(text=t("gui.button.save"))
         self._refresh_drop_hint()
         self._menu()
+        # The menu bar is rebuilt on every language change. Compare adds
+        # Tools after that, and an open compare window picks up the new text.
+        attach_compare(self)
+        window = getattr(self, "_compare_window", None)
+        if window is not None and window.is_open():
+            window.refresh_language()
         self._show_profile()
         self._refresh_result_text()
 

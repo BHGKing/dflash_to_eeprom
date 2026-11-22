@@ -82,6 +82,154 @@ def test_gui_blocks_cas4_and_clears_a_stale_image(app):
     assert "CAS4" in _report(app)
 
 
+def _tools_menu(app):
+    menu = app.root.nametowidget(app.root["menu"])
+    last = menu.index("end")
+    for index in range(last + 1):
+        if menu.type(index) == "cascade" and menu.entrycget(index, "label") == "Tools":
+            return menu.nametowidget(menu.entrycget(index, "menu"))
+    return None
+
+
+def _tagged(widget, tag):
+    ranges = widget.tag_ranges(tag)
+    parts = []
+    for index in range(0, len(ranges), 2):
+        parts.append(widget.get(ranges[index], ranges[index + 1]))
+    return "".join(parts)
+
+
+def test_gui_compare_menu_synced_hex_and_export(app, tmp_path):
+    tools = _tools_menu(app)
+    assert tools is not None
+    assert tools.entrycget(0, "label") == "Compare files..."
+    tools.invoke(0)
+    window = app._compare_window
+    assert window is not None and window.is_open()
+    window.top.withdraw()
+    window._page_locked = True
+    window.page_rows = 4
+
+    data_a = bytes([0x11]) * 64
+    data_b = bytearray(data_a)
+    data_b[5] = 0xAB
+    data_b[48] = 0xCD
+    file_a = tmp_path / "a.bin"
+    file_b = tmp_path / "b.bin"
+    file_a.write_bytes(data_a)
+    file_b.write_bytes(bytes(data_b))
+    assert window.load_file("a", file_a)
+    assert window.load_file("b", file_b)
+    assert window.result is not None
+    assert not window.result.identical
+    assert window.result.differing_bytes == 2
+    summary = window.summary.cget("text")
+    assert "Not identical." in summary
+    assert window.result.sha256_a in summary
+    assert window.result.sha256_b in summary
+    assert "AB" in _tagged(window.hex_b, "current") or "AB" in _tagged(window.hex_b, "diff")
+
+    left = window.hex_a.get("1.0", "end")
+    right = window.hex_b.get("1.0", "end")
+    assert left.splitlines()[0][:8] == right.splitlines()[0][:8]
+    assert len(left.splitlines()) <= window.page_rows + 1
+
+    window.top.deiconify()
+    window.top.update()
+    bbox = window.range_view.bbox("2.0")
+    assert bbox is not None
+
+    class _Click:
+        def __init__(self, x, y):
+            self.x = x
+            self.y = y
+
+    window._on_range_click(_Click(bbox[0] + 4, bbox[1] + 4))
+    assert window.selected == 1
+    assert "00000030" in window.hex_a.get("1.0", "end")
+    window.previous_difference()
+    assert window.selected == 0
+    window.next_difference()
+    assert window.selected == 1
+    assert "00000030" in window.hex_a.get("1.0", "end")
+
+    window.only.set(True)
+    window._toggle_only()
+    filtered = [line for line in window.hex_a.get("1.0", "end").splitlines() if line.startswith("0000")]
+    assert any(line.startswith("00000000") for line in filtered)
+    assert any(line.startswith("00000030") for line in filtered)
+    assert not any(line.startswith("00000010") for line in filtered)
+
+    text_path = tmp_path / "report.txt"
+    csv_path = tmp_path / "report.csv"
+    window.export_to(text_path, "text")
+    window.export_to(csv_path, "csv")
+    assert "Not identical." in text_path.read_text(encoding="utf-8")
+    assert "AB" in text_path.read_text(encoding="utf-8")
+    assert "hex_a" in csv_path.read_text(encoding="utf-8")
+
+    # A few kilobytes must not be inserted as one giant text widget.
+    window.only.set(False)
+    blob = b"\x00" * 65536
+    changed = bytearray(blob)
+    changed[-1] = 1
+    window._page_locked = True
+    window.page_rows = 6
+    window._set_side("a", blob, "big-a.bin", None)
+    window._set_side("b", bytes(changed), "big-b.bin", None)
+    drawn = [line for line in window.hex_a.get("1.0", "end").splitlines() if line]
+    assert window.result.differing_bytes == 1
+    assert len(drawn) == 6
+    assert len(drawn) < window.total_rows
+
+    window.close()
+    assert not window.is_open()
+
+
+def test_gui_compare_uses_the_last_conversion(app, tmp_path):
+    app.load_path(str(GOOD))
+    app.convert()
+    from dflash_eee.compare_view import CompareWindow
+
+    window = CompareWindow(app)
+    window.top.withdraw()
+    assert window.data_b == app.result.image
+    assert "last conversion" in window.name_b
+    assert window.use_last_conversion("a")
+    assert window.result.identical
+    assert "Identical." in window.summary.cget("text")
+    report = tmp_path / "same.txt"
+    window.export_to(report)
+    assert "Identical." in report.read_text(encoding="utf-8")
+    assert "No differences." in report.read_text(encoding="utf-8")
+    window.close()
+
+
+def test_compare_window_follows_the_language(app):
+    from dflash_eee.compare_view import CompareWindow
+
+    window = CompareWindow(app)
+    window.top.withdraw()
+    try:
+        app.change_language("es")
+        menu = app.root.nametowidget(app.root["menu"])
+        tools = None
+        for index in range(menu.index("end") + 1):
+            if menu.type(index) == "cascade" and menu.entrycget(index, "label") == "Herramientas":
+                tools = menu.nametowidget(menu.entrycget(index, "menu"))
+        assert tools is not None
+        assert tools.entrycget(0, "label") == "Comparar archivos..."
+        assert window.top.title() == "Comparar volcados"
+        assert window.prev_btn.cget("text") == "Diferencia anterior"
+        assert window.subtitle_label.cget("text").startswith("Hex")
+        window.close()
+    finally:
+        if window.is_open():
+            window.close()
+        app.change_language("en")
+    assert app.root.title() == "D-Flash to EEPROM - free & open source"
+
+
 def _label_texts(widget):
     texts = []
     for child in widget.winfo_children():

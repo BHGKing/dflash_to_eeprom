@@ -7,8 +7,11 @@
 The conversion core lives here so the command-line tool, the desktop GUI and
 the web upload all call the same code. Module geometry (D-Flash size, EEE
 size, which sectors to replay) comes from :mod:`dflash_eee.profiles`.
+Comparing two dumps (original against read-back, or two modules) lives in
+:mod:`dflash_eee.compare`.
 """
 
+from dflash_eee.compare import CompareResult, DiffRange, compare_bytes, write_report
 from dflash_eee.converter import (
     ConversionResult,
     DFlashConverter,
@@ -24,15 +27,19 @@ from dflash_eee.profiles import (
 )
 
 __all__ = [
+    "CompareResult",
     "ConversionResult",
     "DFlashConverter",
+    "DiffRange",
     "InputError",
     "ProfileError",
+    "compare_bytes",
     "convert_bytes",
     "convert_file",
     "discover_profiles",
     "get_profile",
     "partition_is_valid",
+    "write_report",
 ]
 
 __version__ = "2.0.0"

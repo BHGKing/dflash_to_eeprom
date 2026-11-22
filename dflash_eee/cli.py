@@ -14,8 +14,10 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from pathlib import Path
 
 from dflash_eee import __version__
+from dflash_eee.compare import compare_bytes, format_cli_report, write_report
 from dflash_eee.converter import DFlashConverter, convert_bytes, render_info
 from dflash_eee.i18n import LanguageError, init_language, t
 from dflash_eee.profiles import (
@@ -57,6 +59,34 @@ def _peek_lang(argv: list[str]) -> str | None:
     return known.lang
 
 
+def _compare_argv(argv: list[str]) -> list[str] | None:
+    """Arguments that follow the compare subcommand, or None.
+
+    ``compare`` is the subcommand when it is the first token, or when the
+    only tokens in front of it are ``--lang``. The historical two-argument
+    form is decided before this runs, so ``compare out.bin`` still converts
+    a file named compare.
+    """
+
+    if "compare" not in argv:
+        return None
+    index = argv.index("compare")
+    before = argv[:index]
+    cursor = 0
+    while cursor < len(before):
+        token = before[cursor]
+        if token == "--lang":
+            if cursor + 1 >= len(before):
+                return None
+            cursor += 2
+            continue
+        if token.startswith("--lang="):
+            cursor += 1
+            continue
+        return None
+    return argv[index + 1:]
+
+
 def _print_profiles(profiles) -> None:
     print(t("cli.version_line", version=__version__))
     print("")
@@ -88,6 +118,57 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _write_out(text: str) -> None:
+    """Print compare output even when stdout was pinned to latin-1."""
+
+    try:
+        sys.stdout.write(text)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+        sys.stdout.write(text.encode(encoding, "replace").decode(encoding, "replace"))
+
+
+def compare_command(argv: list[str]) -> int:
+    """``compare FILE_A FILE_B``. Exit 0 if identical, 1 if not, 2 on error."""
+
+    parser = argparse.ArgumentParser(
+        prog="dflash_to_eee compare",
+        description=t("cli.compare.description"),
+    )
+    parser.add_argument("--lang", default=None, help=t("cli.help.lang"))
+    parser.add_argument("file_a", help=t("cli.compare.help.file_a"))
+    parser.add_argument("file_b", help=t("cli.compare.help.file_b"))
+    parser.add_argument("--report", metavar="PATH", help=t("cli.compare.help.report"))
+    args = parser.parse_args(argv)
+    if args.lang:
+        try:
+            init_language(args.lang, honor_env=False)
+        except LanguageError as exc:
+            init_language(honor_env=True)
+            print(t("cli.err.bad_lang", lang=exc.code, choices="en, es"), file=sys.stderr)
+            return 1
+    try:
+        data_a = Path(args.file_a).read_bytes()
+    except OSError as exc:
+        print(t("cli.cannot_read", path=args.file_a, error=exc), file=sys.stderr)
+        return 2
+    try:
+        data_b = Path(args.file_b).read_bytes()
+    except OSError as exc:
+        print(t("cli.cannot_read", path=args.file_b, error=exc), file=sys.stderr)
+        return 2
+    result = compare_bytes(data_a, data_b)
+    _write_out(format_cli_report(result, args.file_a, args.file_b))
+    if args.report:
+        try:
+            write_report(args.report, result, args.file_a, args.file_b)
+        except OSError as exc:
+            print(t("cli.cannot_write", path=args.report, error=exc), file=sys.stderr)
+            return 2
+        print(t("cli.compare.wrote", path=args.report), file=sys.stderr)
+    return 0 if result.identical else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     configure_logging()
     if argv is None:
@@ -95,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Historical two-argument form. No extra sentences, so the ci logs match.
     # Language is ignored here on purpose: those log lines are the 2017 text.
+    # ``compare out.bin`` stays a conversion of a file named compare.
     if _historical(argv):
         converter = DFlashConverter(get_profile("bmw_frm3"))
         converter.convert(argv[0], argv[1])
@@ -107,6 +189,10 @@ def main(argv: list[str] | None = None) -> int:
         init_language(honor_env=True)
         print(t("cli.err.bad_lang", lang=exc.code, choices="en, es"), file=sys.stderr)
         return 1
+
+    compare_args = _compare_argv(argv)
+    if compare_args is not None:
+        return compare_command(compare_args)
 
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -124,6 +210,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_usage(sys.stderr)
         print(t("cli.usage1"), file=sys.stderr)
         print(t("cli.usage2"), file=sys.stderr)
+        print(t("cli.usage3"), file=sys.stderr)
         return 1
 
     try:

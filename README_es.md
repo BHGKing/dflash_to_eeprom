@@ -72,6 +72,26 @@ python3 gui.py dump.bin
 
 ![Perfil KVM marcado experimental, con el motivo en pantalla](docs/screenshots/kvm-experimental.png)
 
+## Comparar dos volcados
+
+Sirve cuando hay que revisar dos binarios: la EEPROM original y el archivo que acaba de armar esta herramienta, un volcado de antes de la reparación y la lectura después de programar, o dos BCM. Comparar solo lee los archivos.
+
+En la ventana, abra **Herramientas → Comparar archivos...**. Elija el archivo A y el archivo B con Examinar. **Última conversión** llena ese lado con la imagen EEPROM que está en la ventana principal, aunque todavía no se haya guardado. Si ya hay una conversión en pantalla, el archivo B empieza como esa imagen.
+
+Las dos vistas hex quedan en el mismo offset. Cada fila es el offset, 16 bytes en hex y la columna ASCII. Los bytes que difieren van resaltados. Si un archivo es más largo, el lado corto muestra `--` en lo que falta. Debajo se listan los rangos contiguos de diferencias. Un clic salta a ese rango. **Diferencia anterior** y **Diferencia siguiente** (F3 y Shift+F3) hacen lo mismo. **Solo filas con diferencias** oculta las filas iguales.
+
+El resumen da los dos tamaños, si los archivos son idénticos, cuántos bytes y rangos difieren, y el SHA-256 de cada archivo. Un archivo de unos megabytes sigue respondiendo: solo se dibujan las filas que se ven.
+
+**Exportar texto...** escribe el resumen y el hex completo de cada rango. **Exportar CSV...** escribe el mismo resumen y luego una fila por rango. Las columnas del CSV se quedan en inglés (`offset`, `length`, `hex_a`, `hex_b`) para que una hoja de cálculo las lea siempre igual. SHA-256, offset, hex y las letras A y B se quedan así en los dos idiomas.
+
+```bash
+python3 dflash_to_eee.py compare original.bin readback.bin
+python3 dflash_to_eee.py --lang es compare original.bin readback.bin --report diff.txt
+python3 dflash_to_eee.py compare original.bin readback.bin --report diff.csv
+```
+
+El código de salida es 0 si son idénticos, 1 si difieren y 2 si un archivo no se puede leer o el reporte no se puede escribir. La terminal imprime el resumen y cada rango. Un rango largo muestra ahí los primeros 16 bytes; el archivo de reporte lista todos. `--report` escribe CSV cuando la ruta termina en `.csv`.
+
 ### Ejecutable de Windows
 
 `build.cmd` instala PyInstaller y tkinterdnd2, y luego arma `dist\dflash_to_eee.exe` desde `dflash_to_eee.spec`. El workflow de GitHub Actions `windows-exe` corre las pruebas en Windows y sube ese ejecutable como artefacto. Una etiqueta de versión publica el mismo exe en la página de Releases; vea Publicar. Los perfiles sueltos se pueden dejar en una carpeta `profiles` junto al exe. Los catálogos de idioma viajan dentro del exe.
@@ -138,6 +158,7 @@ python3 dflash_to_eee.py dflash.bin eeprom.bin
 python3 dflash_to_eee.py --list-profiles
 python3 dflash_to_eee.py --lang es --profile jlr_xf_bcm dflash.bin eeprom.bin
 python3 dflash_to_eee.py --profile bmw_frm3 --strict dflash.bin eeprom.bin
+python3 dflash_to_eee.py --lang es compare original.bin readback.bin
 ```
 
 `--strict` sale con código 2 cuando el largo no es el tamaño de D-Flash del perfil o la bitácora se ve corrupta. La forma de dos argumentos no lo hace: un archivo más largo se recorre igual desde sus primeros 32 KB, que es lo que hacía el script original.
