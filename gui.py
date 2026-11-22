@@ -44,13 +44,30 @@ into one Windows executable without a Qt runtime.
 from __future__ import annotations
 
 import sys
+import threading
 import tkinter as tk
 import tkinter.font as tkfont
+import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from dflash_eee import __version__
+from dflash_eee.build_info import COMMIT, RELEASE_TAG
 from dflash_eee.converter import convert_bytes
+from dflash_eee.integrity import (
+    FREE_BAR,
+    FREE_SOFTWARE_NOTICE,
+    SOURCE_REPOSITORY_URL,
+    config_path,
+    identify_running_copy,
+    mark_notice_seen,
+    notice_body,
+    notice_seen,
+    release_page_url,
+    status_for_plan,
+    verification_plan,
+    verify_release,
+)
 from dflash_eee.profiles import default_extra_dirs, discover_profiles, get_profile
 from dflash_eee.report import hex_dump, parse_drop_paths, report_lines, shorten_middle, size_issue
 
@@ -59,6 +76,12 @@ SAFETY = (
     "partition, not back to D-Flash, and read it back to verify. This tool does "
     "not clear fault memory, counters or checksums."
 )
+
+_VERIFY_COLOUR = {
+    "match": "#1f7a4d",
+    "mismatch": "#9b2335",
+    "could_not_check": "#8a5a00",
+}
 
 
 def _font(names, size, weight="normal"):
@@ -101,7 +124,7 @@ def _enable_drop(widget, callback) -> bool:
 class App(object):
     def __init__(self, root):
         self.root = root
-        self.root.title("D-Flash to EEPROM")
+        self.root.title("D-Flash to EEPROM - free & open source")
         self.root.geometry("1180x820")
         self.root.minsize(980, 680)
         self.root.configure(bg="#e6edf3")
@@ -117,6 +140,10 @@ class App(object):
         self.data: bytes | None = None
         self.result = None
         self.drop_enabled = False
+        self._trust_dialog = None
+        self._trust_dismiss = None
+        self._trust_body = None
+        self._trust_status = None
         self._styles()
         self._build()
         self._show_profile()
@@ -173,6 +200,10 @@ class App(object):
         self.status = tk.StringVar(value="Open a D-Flash dump, check the module, then convert.")
         tk.Label(status_bar, textvariable=self.status, bg="#d5dee6", fg="#1c2833",
                  font=self.ui_small, anchor="w").pack(fill="x", padx=12, pady=3)
+        free_bar = tk.Frame(self.root, bg="#e7f2ea")
+        free_bar.pack(fill="x", side="bottom")
+        tk.Label(free_bar, text=FREE_BAR, bg="#e7f2ea", fg="#1f7a4d", font=self.ui_small,
+                 anchor="w").pack(fill="x", padx=12, pady=3)
 
         self._menu()
         self.root.bind("<Control-o>", lambda _event: self.browse())
@@ -190,6 +221,7 @@ class App(object):
         file_menu.add_command(label="Quit", command=self.root.destroy)
         menu.add_cascade(label="File", menu=file_menu)
         help_menu = tk.Menu(menu, tearoff=0)
+        help_menu.add_command(label="Verify this copy", command=self.verify_this_copy)
         help_menu.add_command(label="Safety notes", command=self._safety_dialog)
         help_menu.add_command(label="About", command=self._about)
         menu.add_cascade(label="Help", menu=help_menu)
@@ -496,17 +528,177 @@ class App(object):
         messagebox.showwarning("Safety", SAFETY + "\n\n" + self.profile.write_notes, parent=self.root)
 
     def _about(self):
+        if RELEASE_TAG:
+            build = "Release %s\nCommit %s" % (RELEASE_TAG, COMMIT)
+        else:
+            build = "Running from source (no release tag embedded)."
         messagebox.showinfo(
             "About",
-            "D-Flash to EEPROM %s\n\n"
+            "D-Flash to EEPROM %s\n\n%s\n\n%s\n\n"
             "Copyright 2017-2018 Ben van Leeuwen Autotechniek\n"
             "Copyright 2026 Jose\n\n"
             "BSD-3-Clause. See the LICENSE file.\n\n"
             "The replay is the original FRM3 decoder, parameterized by module. "
-            "A profile marked Experimental is not a confirmed memory map."
-            % __version__,
+            "A profile marked Experimental is not a confirmed memory map.\n\n"
+            "Help, then Verify this copy, shows the SHA-256 of the running program."
+            % (__version__, FREE_SOFTWARE_NOTICE, build),
             parent=self.root,
         )
+
+    def verify_this_copy(self):
+        """Recompute the local hash and, when this is a tagged exe, compare it online."""
+
+        try:
+            self.show_trust_dialog(check_online=True)
+        except tk.TclError:
+            return
+
+    def offer_first_run_notice(self):
+        """Show the SmartScreen and free-software notice once. No network."""
+
+        try:
+            path = config_path()
+            if notice_seen(path):
+                return
+        except Exception:
+            return
+
+        def acknowledge():
+            try:
+                mark_notice_seen(path)
+            except OSError:
+                pass
+
+        try:
+            self.show_trust_dialog(check_online=False, on_dismiss=acknowledge)
+        except tk.TclError:
+            return
+
+    def show_trust_dialog(self, check_online=False, on_dismiss=None):
+        copy = identify_running_copy()
+        dialog = tk.Toplevel(self.root)
+        self._trust_dialog = dialog
+        dialog.title("Verify this copy")
+        dialog.configure(bg="#ffffff")
+        dialog.transient(self.root)
+        dialog.minsize(560, 440)
+        dialog.geometry("660x560")
+
+        header = tk.Frame(dialog, bg="#1e3a5f")
+        header.pack(fill="x")
+        tk.Label(header, text="Verify this copy", bg="#1e3a5f", fg="#f7f4ef",
+                 font=self.ui_bold, anchor="w").pack(fill="x", padx=16, pady=12)
+
+        closed = {"done": False}
+
+        def dismiss(_event=None):
+            if closed["done"]:
+                return
+            closed["done"] = True
+            try:
+                dialog.destroy()
+            except tk.TclError:
+                pass
+            if on_dismiss is not None:
+                on_dismiss()
+
+        self._trust_dismiss = dismiss
+        dialog.protocol("WM_DELETE_WINDOW", dismiss)
+        dialog.bind("<Escape>", dismiss)
+
+        buttons = tk.Frame(dialog, bg="#ffffff")
+        buttons.pack(fill="x", side="bottom", padx=16, pady=12)
+        ttk.Button(
+            buttons, text="Open release page",
+            command=lambda: webbrowser.open(release_page_url(RELEASE_TAG)),
+        ).pack(side="left")
+        ttk.Button(
+            buttons, text="Open source repository",
+            command=lambda: webbrowser.open(SOURCE_REPOSITORY_URL),
+        ).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="Dismiss", command=dismiss).pack(side="right")
+
+        self._trust_status = tk.StringVar()
+        status_label = tk.Label(
+            dialog, textvariable=self._trust_status, bg="#ffffff", fg="#1c2833",
+            font=self.ui_small, anchor="w", justify="left", wraplength=620,
+        )
+        status_label.pack(fill="x", side="bottom", padx=16, pady=(0, 4))
+
+        if copy.kind == "executable" and copy.sha256:
+            hash_frame = tk.Frame(dialog, bg="#ffffff")
+            hash_frame.pack(fill="x", side="bottom", padx=16, pady=(0, 8))
+            tk.Label(hash_frame, text="SHA-256", bg="#ffffff", fg="#1e3a5f",
+                     font=self.ui_bold, anchor="w").pack(fill="x")
+            entry = tk.Entry(
+                hash_frame, font=self.mono, readonlybackground="#f4f8fb", relief="flat",
+            )
+            entry.insert(0, copy.sha256)
+            entry.configure(state="readonly")
+            entry.pack(fill="x", pady=(4, 0))
+
+        text_frame = tk.Frame(dialog, bg="#ffffff")
+        text_frame.pack(fill="both", expand=True, padx=12, pady=(8, 4))
+        body = tk.Text(
+            text_frame, wrap="word", font=self.ui_small, bg="#ffffff", fg="#1c2833",
+            relief="flat", highlightthickness=0, padx=8, pady=8,
+        )
+        scroll = ttk.Scrollbar(text_frame, command=body.yview)
+        body.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        body.pack(side="left", fill="both", expand=True)
+        body.insert("1.0", notice_body(copy, RELEASE_TAG))
+        body.configure(state="disabled")
+        self._trust_body = body
+
+        plan = verification_plan(copy, RELEASE_TAG, check_online)
+        self._trust_status.set(status_for_plan(plan, RELEASE_TAG))
+        if plan in ("source", "unreadable", "no_tag"):
+            status_label.configure(fg=_VERIFY_COLOUR["could_not_check"])
+        if plan == "download":
+            self._start_online_check(dialog, status_label, copy.sha256)
+
+        try:
+            dialog.lift()
+            dialog.focus_set()
+        except tk.TclError:
+            pass
+        return dialog
+
+    def _start_online_check(self, dialog, status_label, local_hash):
+        """Fetch SHA256SUMS.txt off the UI thread. A timeout applies inside verify_release."""
+
+        token = object()
+        dialog._verify_token = token
+
+        def apply(result, token=token):
+            if getattr(dialog, "_verify_token", None) is not token:
+                return
+            try:
+                if not dialog.winfo_exists():
+                    return
+            except tk.TclError:
+                return
+            if result is None:
+                self._trust_status.set(
+                    "Could not check. The published checksum could not be downloaded."
+                )
+                status_label.configure(fg=_VERIFY_COLOUR["could_not_check"])
+                return
+            self._trust_status.set(result.detail)
+            status_label.configure(fg=_VERIFY_COLOUR.get(result.status, "#1c2833"))
+
+        def work():
+            try:
+                result = verify_release(RELEASE_TAG, local_hash, timeout=5.0)
+            except Exception:
+                result = None
+            try:
+                self.root.after(0, lambda result=result: apply(result))
+            except tk.TclError:
+                pass
+
+        threading.Thread(target=work, name="verify-copy", daemon=True).start()
 
 
 def main(argv=None):
@@ -517,6 +709,8 @@ def main(argv=None):
         candidate = Path(args[0])
         if candidate.is_file():
             app.load_path(str(candidate))
+    # Local notice only. Comparing with GitHub waits until Help → Verify this copy.
+    root.after(200, app.offer_first_run_notice)
     root.mainloop()
     return 0
 
