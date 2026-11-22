@@ -70,6 +70,36 @@ python3 gui.py dump.bin
 
 ![KVM profile marked experimental, with the reason on screen](docs/screenshots/kvm-experimental.png)
 
+## Compare two dumps
+
+Use this when two binaries need to be checked against each other: the original EEPROM read and the file this tool just built, a dump from before a repair and the read-back after programming, or two BCMs. Compare only reads the files.
+
+In the desktop window, open **Tools → Compare files...**. Choose file A and file B with Browse. **Last conversion** fills that side with the EEPROM image currently in the main window, including an image that has not been saved yet. If a conversion is already on screen, file B starts as that image.
+
+The two hex views stay locked on the same offset. Each row is the offset, 16 hex bytes, and the ASCII column. Bytes that differ are highlighted. When one file is longer, the shorter side shows `--` for the missing tail. Under the views, every contiguous run of differences is listed. Click a run to jump there. **Previous difference** and **Next difference** (F3 and Shift+F3) do the same. **Only differing rows** hides rows that match, which is the useful view when a 32 KB dump has a handful of changed bytes.
+
+The summary gives both sizes, whether the files are identical, how many bytes and ranges differ, and the SHA-256 of each file. A file of a few megabytes stays responsive: only the rows on screen are drawn.
+
+**Export text...** writes the summary and the full hex of each range. **Export CSV...** writes the same summary as fields, then one row per range: `offset,length,hex_a,hex_b`.
+
+```bash
+python3 dflash_to_eee.py compare original.bin readback.bin
+python3 dflash_to_eee.py compare original.bin readback.bin --report diff.txt
+python3 dflash_to_eee.py compare original.bin readback.bin --report diff.csv
+```
+
+The exit status is 0 when the files are identical, 1 when they differ, and 2 when a file cannot be read or the report cannot be written. The terminal prints the summary and each range. A long range shows its first 16 bytes there, and the report file lists every byte. `--report` writes CSV when the path ends in `.csv`, and a text report otherwise.
+
+From Python:
+
+```python
+from dflash_eee import compare_bytes
+
+result = compare_bytes(open("a.bin", "rb").read(), open("b.bin", "rb").read())
+result.identical
+result.ranges[0].offset, result.ranges[0].bytes_a, result.ranges[0].bytes_b
+```
+
 ### Windows executable
 
 `build.cmd` installs PyInstaller and tkinterdnd2, then builds `dist\dflash_to_eee.exe` from `dflash_to_eee.spec`. The GitHub Actions workflow `windows-exe` runs the tests on Windows and uploads that executable as a build artifact. A version tag publishes the same exe on the Releases page; see Releasing. Drop-in profiles can be placed in a `profiles` folder next to the exe.
@@ -102,9 +132,13 @@ python3 dflash_to_eee.py dflash.bin eeprom.bin
 python3 dflash_to_eee.py --list-profiles
 python3 dflash_to_eee.py --profile jlr_xf_bcm dflash.bin eeprom.bin
 python3 dflash_to_eee.py --profile bmw_frm3 --strict dflash.bin eeprom.bin
+python3 dflash_to_eee.py compare original.bin readback.bin
+python3 dflash_to_eee.py compare original.bin readback.bin --report diff.txt
 ```
 
 `--strict` exits with status 2 when the length is not the profile's D-Flash size or the journal looks corrupt. The two-argument form does not: a longer file is still replayed from its first 32 KB, which is what the original script did.
+
+`compare` checks two dumps and exits 1 when the bytes differ. The details are in Compare two dumps.
 
 From Python:
 
@@ -155,7 +189,7 @@ Built-in profiles live in `dflash_eee/profiles.py`. A shop can also drop a JSON 
 python3 -m pytest -q
 ```
 
-`ci/input/dflash` is replayed with the original two-argument command. Where `ci/input/eee` has a paired image, the bytes must match. Log lines (VIN, dates, part numbers, warnings, the short-file exception) must match `ci/input/logs`. Synthetic journals cover overwrite order, the empty-record quirk, unknown commands, a short file, an unrecognized layout, and the 2 KB profile.
+`ci/input/dflash` is replayed with the original two-argument command. Where `ci/input/eee` has a paired image, the bytes must match. Log lines (VIN, dates, part numbers, warnings, the short-file exception) must match `ci/input/logs`. Synthetic journals cover overwrite order, the empty-record quirk, unknown commands, a short file, an unrecognized layout, and the 2 KB profile. `tests/test_compare.py` checks equal buffers, a single changed byte, several ranges, different lengths, and empty files.
 
 `ci/run_ci.sh` runs that same suite.
 

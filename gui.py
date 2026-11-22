@@ -50,6 +50,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from dflash_eee import __version__
+from dflash_eee.compare_view import attach_compare
 from dflash_eee.converter import convert_bytes
 from dflash_eee.profiles import default_extra_dirs, discover_profiles, get_profile
 from dflash_eee.report import hex_dump, parse_drop_paths, report_lines, shorten_middle, size_issue
@@ -180,6 +181,9 @@ class App(object):
         self.root.bind("<Control-s>", lambda _event: self.save())
         self.root.bind("<Control-S>", lambda _event: self.save())
         self.root.bind("<Control-Return>", lambda _event: self.convert())
+        # Tools → Compare lives in its own module so File and Help can change
+        # without touching the hex compare window.
+        attach_compare(self)
 
     def _menu(self):
         menu = tk.Menu(self.root)

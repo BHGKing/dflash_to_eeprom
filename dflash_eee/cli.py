@@ -14,8 +14,10 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from pathlib import Path
 
 from dflash_eee import __version__
+from dflash_eee.compare import compare_bytes, format_cli_report, write_report
 from dflash_eee.converter import DFlashConverter, convert_bytes, render_info
 from dflash_eee.profiles import ProfileError, default_extra_dirs, discover_profiles, get_profile
 from dflash_eee.report import report_lines, size_issue
@@ -57,7 +59,10 @@ def _print_profiles(profiles) -> None:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dflash_to_eee",
-        description="Rebuild an S12XE emulated EEPROM image from a D-Flash dump.",
+        description=(
+            "Rebuild an S12XE emulated EEPROM image from a D-Flash dump. "
+            "compare FILE_A FILE_B lists the bytes that differ."
+        ),
     )
     parser.add_argument("--profile", default="bmw_frm3", help="Module profile id (default: bmw_frm3)")
     parser.add_argument("--list-profiles", action="store_true", help="List built-in and drop-in profiles")
@@ -69,10 +74,60 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _write_out(text: str) -> None:
+    """Print compare output even when stdout was pinned to latin-1."""
+
+    try:
+        sys.stdout.write(text)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+        sys.stdout.write(text.encode(encoding, "replace").decode(encoding, "replace"))
+
+
+def compare_command(argv: list[str]) -> int:
+    """``compare FILE_A FILE_B``. Exit 0 if identical, 1 if not, 2 on error."""
+
+    parser = argparse.ArgumentParser(
+        prog="dflash_to_eee compare",
+        description="Compare two binary dumps and list the bytes that differ.",
+    )
+    parser.add_argument("file_a", help="First file")
+    parser.add_argument("file_b", help="Second file")
+    parser.add_argument(
+        "--report",
+        metavar="PATH",
+        help="Write a text report, or CSV when the path ends in .csv",
+    )
+    args = parser.parse_args(argv)
+    try:
+        data_a = Path(args.file_a).read_bytes()
+    except OSError as exc:
+        print("Cannot read %s: %s" % (args.file_a, exc), file=sys.stderr)
+        return 2
+    try:
+        data_b = Path(args.file_b).read_bytes()
+    except OSError as exc:
+        print("Cannot read %s: %s" % (args.file_b, exc), file=sys.stderr)
+        return 2
+    result = compare_bytes(data_a, data_b)
+    _write_out(format_cli_report(result, args.file_a, args.file_b))
+    if args.report:
+        try:
+            write_report(args.report, result, args.file_a, args.file_b)
+        except OSError as exc:
+            print("Cannot write %s: %s" % (args.report, exc), file=sys.stderr)
+            return 2
+        print("Wrote %s" % args.report, file=sys.stderr)
+    return 0 if result.identical else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     configure_logging()
     if argv is None:
         argv = sys.argv[1:]
+
+    if argv and argv[0] == "compare":
+        return compare_command(argv[1:])
 
     # Historical two-argument form. No extra sentences, so the ci logs match.
     if len(argv) == 2 and not argv[0].startswith("-") and not argv[1].startswith("-"):
@@ -96,6 +151,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_usage(sys.stderr)
         print("Usage: dflash_to_eee.py <dflash> <eeprom>", file=sys.stderr)
         print("       dflash_to_eee.py --profile <id> <dflash> <eeprom>", file=sys.stderr)
+        print("       dflash_to_eee.py compare <file A> <file B>", file=sys.stderr)
         return 1
 
     try:
