@@ -1,0 +1,6 @@
+# Drag-and-drop in the desktop window. The converter and CLI do not need it.
+tkinterdnd2>=0.3.0
+
+# Tests and the Windows executable build.
+pytest>=7
+pyinstaller>=6

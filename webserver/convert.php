@@ -36,19 +36,29 @@
                 else {
                     // Also use the sha1 of the source for the eeprom file, since we can't know that beforehand.
                     $eepromfile = $result_path . "/" . $sha1 . ".bin";
-                
+                    $profile = "bmw_frm3";
+                    if (isset($_POST["profile"]) && preg_match('/^[a-z][a-z0-9_]*$/', $_POST["profile"])) {
+                        $profile = $_POST["profile"];
+                    }
+
                     $descriptorspec = array(
                        0 => array("pipe", "r"),  // stdin
                        1 => array("pipe", "w"),  // stdout
                        2 => array("pipe", "w"),  // stderr
                     );
-                    $process = proc_open('../dflash_to_eee.py ' . $target . ' ' . $eepromfile, $descriptorspec, $pipes);
+                    $script = escapeshellarg(dirname(__DIR__) . "/dflash_to_eee.py");
+                    $command = "python3 " . $script
+                        . " --profile " . escapeshellarg($profile)
+                        . " " . escapeshellarg($target)
+                        . " " . escapeshellarg($eepromfile);
+                    $process = proc_open($command, $descriptorspec, $pipes);
                     
                     $stdout = stream_get_contents($pipes[1]);
                     fclose($pipes[1]);
 
                     $stderr = stream_get_contents($pipes[2]);
                     fclose($pipes[2]);
+                    proc_close($process);
 
                     $logfp = fopen($logfile, "w");
                     fwrite($logfp, $stdout);
@@ -63,9 +73,13 @@
                     echo($stderr);
                     echo "</pre>";
 
-                    echo "<p>Before downloading, ensure that the VIN is correct.</p>";
+                    echo "<p>Before downloading, ensure that the VIN is correct and that the profile matches the module.</p>";
 
-                    echo "<h2><a href=\"download.php?sha1=" . $sha1 . "\">Download EEPROM image</a></h2>";
+                    if (!file_exists($eepromfile)) {
+                        echo "<p>No EEPROM image was written. Read the log above before trying another file.</p>";
+                    } else {
+                        echo "<h2><a href=\"download.php?sha1=" . $sha1 . "\">Download EEPROM image</a></h2>";
+                    }
 
                     echo "<h2><strong>Note:</strong> Ensure you write to EEE partition and not back to D-Flash!</h2>";
                     echo "<h2><strong>Note:</strong> Always verify after writing the image to the device!</h2>";
