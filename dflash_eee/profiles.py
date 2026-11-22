@@ -122,6 +122,71 @@ class PartField:
     kind: str = "part"
 
 
+# ISO 3780 world manufacturer identifiers used by the VIN scan.
+# These are the public codes for the marques this tool already profiles.
+# A string is a detected VIN only when its first three characters are in the
+# profile's list and the ISO 3779 check digit matches. That is a pattern
+# match, not a stored address.
+BMW_WMIS: tuple[str, ...] = ("4US", "5UX", "5YM", "WBA", "WBS", "WBX", "WBY", "WMW")
+JLR_WMIS: tuple[str, ...] = ("SAJ", "SAL")
+
+_CHECKSUM_ALGORITHMS = ("sum8", "xor8", "sum16be")
+
+
+@dataclass(frozen=True)
+class ChecksumSpec:
+    """Checksum stored beside a region.
+
+    ``start`` and ``length`` are the bytes that are covered. ``offset`` is
+    where the checksum itself is stored, and it must sit outside that span.
+    Offsets are absolute in the EEPROM image unless ``relative`` is set,
+    which a key slot uses so the same rule applies to every slot.
+    """
+
+    algorithm: str
+    offset: int
+    start: int
+    length: int
+    relative: bool = False
+
+
+@dataclass(frozen=True)
+class RegionField:
+    """One decoded region declared by a profile.
+
+    ``confidence`` is ``confirmed`` only for a built-in profile whose offset
+    was checked against a published source. A drop-in file is stored as
+    ``detected`` even if the file says confirmed.
+    """
+
+    label: str
+    offset: int
+    length: int
+    encoding: str
+    confidence: str = "confirmed"
+    checksum: ChecksumSpec | None = None
+    clear_on_virgin: bool = False
+    kind: str = "region"
+
+
+@dataclass(frozen=True)
+class KeyLayout:
+    """Key slots, present only when the map is declared.
+
+    A slot is blank when its id bytes equal ``blank``. Anything else is used.
+    There is no separate guess for "looks like a transponder".
+    """
+
+    base: int
+    count: int
+    stride: int
+    id_offset: int
+    id_length: int
+    blank: bytes
+    checksum: ChecksumSpec | None = None
+    confidence: str = "confirmed"
+
+
 Field = AsciiField | DateField | PartField
 
 
@@ -150,6 +215,15 @@ class ModuleProfile:
     layout: EeeLayout = field(default_factory=lambda: S12XE_LAYOUT)
     conversion_enabled: bool = True
     external: bool = False
+    # VIN scan and virginize are separate from the historical field list so
+    # the 2017 FRM3 log stays byte-for-byte the same.
+    vin_wmis: tuple[str, ...] = ()
+    scan_vin: bool = False
+    scan_part_numbers: bool = False
+    keys_status: str = "no_map"  # not_applicable, no_map, layout
+    key_layout: KeyLayout | None = None
+    virginize_mode: str = "unsupported"  # unsupported, clear_vin, clear_vin_and_keys
+    regions: tuple[RegionField, ...] = ()
 
     @property
     def supported(self) -> bool:
@@ -254,6 +328,48 @@ def _require(condition: bool, message: str) -> None:
         raise ProfileError(message)
 
 
+def _check_checksum(spec: ChecksumSpec, limit: int, label: str) -> None:
+    _require(spec.algorithm in _CHECKSUM_ALGORITHMS, t("profile.err.checksum_alg", label=label))
+    width = 2 if spec.algorithm == "sum16be" else 1
+    _require(spec.length > 0 and spec.offset >= 0 and spec.start >= 0, t("profile.err.checksum_range", label=label))
+    covered = range(spec.start, spec.start + spec.length)
+    stored = range(spec.offset, spec.offset + width)
+    if set(covered) & set(stored):
+        raise ProfileError(t("profile.err.checksum_overlap", label=label))
+    end = max(spec.start + spec.length, spec.offset + width)
+    if limit > 0 and end > limit:
+        raise ProfileError(t("profile.err.checksum_fit", label=label))
+
+
+def _check_regions(profile: ModuleProfile) -> None:
+    limit = profile.eee_size
+    for spec in profile.regions:
+        _require(spec.confidence in ("confirmed", "detected"), t("profile.err.confidence", label=spec.label))
+        _require(spec.encoding in ("ascii", "uint-be", "uint-le", "hex"), t("profile.err.encoding", label=spec.label))
+        _require(spec.length > 0 and spec.offset >= 0, t("profile.err.region_range", label=spec.label))
+        if limit > 0 and spec.offset + spec.length > limit:
+            raise ProfileError(t("profile.err.region_fit", label=spec.label, id=profile.id))
+        if spec.checksum is not None:
+            _check_checksum(spec.checksum, limit, spec.label)
+
+
+def _check_key_layout(profile: ModuleProfile) -> None:
+    layout = profile.key_layout
+    if layout is None:
+        return
+    _require(layout.count > 0 and layout.stride > 0, t("profile.err.key_shape", id=profile.id))
+    _require(layout.id_length > 0 and len(layout.blank) == layout.id_length, t("profile.err.key_blank", id=profile.id))
+    _require(0 <= layout.id_offset and layout.id_offset + layout.id_length <= layout.stride, t("profile.err.key_id", id=profile.id))
+    _require(layout.confidence in ("confirmed", "detected"), t("profile.err.confidence", label=profile.id))
+    end = layout.base + layout.count * layout.stride
+    if profile.eee_size > 0 and (layout.base < 0 or end > profile.eee_size):
+        raise ProfileError(t("profile.err.key_fit", id=profile.id))
+    if layout.checksum is not None:
+        if not layout.checksum.relative:
+            raise ProfileError(t("profile.err.key_checksum_relative", id=profile.id))
+        _check_checksum(layout.checksum, layout.stride, profile.id)
+
+
 def _check_profile(profile: ModuleProfile) -> None:
     _require(
         profile.status in ("supported", "experimental", "unsupported"),
@@ -294,6 +410,26 @@ def _check_profile(profile: ModuleProfile) -> None:
                 profile.eee_size == profile.erpart_pages * SECTOR_SIZE,
                 t("profile.err.eee_mismatch", id=profile.id),
             )
+
+    _require(
+        profile.keys_status in ("not_applicable", "no_map", "layout"),
+        t("profile.err.keys_status", id=profile.id),
+    )
+    _require(
+        profile.virginize_mode in ("unsupported", "clear_vin", "clear_vin_and_keys"),
+        t("profile.err.virginize_mode", id=profile.id),
+    )
+    if profile.keys_status == "layout":
+        _require(profile.key_layout is not None, t("profile.err.key_layout_missing", id=profile.id))
+    elif profile.key_layout is not None:
+        raise ProfileError(t("profile.err.key_layout_extra", id=profile.id))
+    if profile.virginize_mode == "clear_vin_and_keys":
+        layout = profile.key_layout
+        _require(layout is not None and layout.checksum is not None, t("profile.err.virgin_keys", id=profile.id))
+    for spec in profile.vin_wmis:
+        _require(len(spec) == 3 and spec.isalnum() and spec.isupper(), t("profile.err.wmi", id=profile.id))
+    _check_regions(profile)
+    _check_key_layout(profile)
 
     if not profile.conversion_enabled:
         return
@@ -380,6 +516,10 @@ BUILTIN: tuple[ModuleProfile, ...] = (
             "This repository: the original decoder and the ci/ sample pairs (32 KB D-Flash, 4 KB EEPROM), including the FRM3 field strings in ci/input/logs.",
         ),
         fields=_FRM3_FIELDS,
+        vin_wmis=BMW_WMIS,
+        scan_vin=True,
+        keys_status="not_applicable",
+        virginize_mode="unsupported",
     ),
     ModuleProfile(
         id="bmw_frm_f_xet512",
@@ -422,6 +562,10 @@ BUILTIN: tuple[ModuleProfile, ...] = (
             "Freescale AN3490 for the shared S12XE record system. https://www.nxp.com/docs/en/application-note/AN3490.pdf",
         ),
         fields=(),
+        vin_wmis=BMW_WMIS,
+        scan_vin=True,
+        keys_status="no_map",
+        virginize_mode="unsupported",
     ),
     ModuleProfile(
         id="jlr_xf_bcm",
@@ -467,6 +611,11 @@ BUILTIN: tuple[ModuleProfile, ...] = (
             "Freescale AN3743 Figure 6: ERPART regions are taken from the top of the buffer. ERPART 1 is the 256 bytes at 0x13_FC00-0x13_FFFF, so ERPART 8 is 0x13_F800-0x13_FFFF. https://www.nxp.com/docs/en/application-note/AN3743.pdf",
         ),
         fields=(),
+        vin_wmis=JLR_WMIS,
+        scan_vin=True,
+        scan_part_numbers=True,
+        keys_status="no_map",
+        virginize_mode="clear_vin",
     ),
     ModuleProfile(
         id="jlr_kvm",
@@ -519,6 +668,11 @@ BUILTIN: tuple[ModuleProfile, ...] = (
             "Freescale AN3490 partition rule: (128-16)/8 = 14, which is a legal S12XE partition, and the record system is the family EEE. https://www.nxp.com/docs/en/application-note/AN3490.pdf",
         ),
         fields=(),
+        vin_wmis=JLR_WMIS,
+        scan_vin=True,
+        scan_part_numbers=True,
+        keys_status="no_map",
+        virginize_mode="unsupported",
     ),
     ModuleProfile(
         id="bmw_cas4",
@@ -551,6 +705,8 @@ BUILTIN: tuple[ModuleProfile, ...] = (
         ),
         fields=(),
         conversion_enabled=False,
+        keys_status="no_map",
+        virginize_mode="unsupported",
     ),
 )
 
@@ -593,6 +749,65 @@ def _as_int(value, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ProfileError(t("profile.err.not_integer", label=label))
     return value
+
+
+def _checksum_from_json(raw, label: str) -> ChecksumSpec:
+    if not isinstance(raw, dict):
+        raise ProfileError(t("profile.err.checksum_object", label=label))
+    return ChecksumSpec(
+        algorithm=str(raw.get("algorithm") or ""),
+        offset=_as_int(raw.get("offset"), "checksum.offset"),
+        start=_as_int(raw.get("start"), "checksum.start"),
+        length=_as_int(raw.get("length"), "checksum.length"),
+        relative=bool(raw.get("relative", False)),
+    )
+
+
+def _region_from_json(raw: dict, external: bool) -> RegionField:
+    if not isinstance(raw, dict):
+        raise ProfileError(t("profile.err.region_object"))
+    label = raw.get("label")
+    if not isinstance(label, str) or not label:
+        raise ProfileError(t("profile.err.field_label"))
+    confidence = str(raw.get("confidence") or "detected")
+    if external and confidence == "confirmed":
+        confidence = "detected"
+    checksum = raw.get("checksum")
+    return RegionField(
+        label=label,
+        offset=_as_int(raw.get("offset"), "offset"),
+        length=_as_int(raw.get("length"), "length"),
+        encoding=str(raw.get("encoding") or ""),
+        confidence=confidence,
+        checksum=None if checksum is None else _checksum_from_json(checksum, label),
+        clear_on_virgin=bool(raw.get("clear_on_virgin", False)),
+    )
+
+
+def _key_layout_from_json(raw: dict, external: bool) -> KeyLayout:
+    if not isinstance(raw, dict):
+        raise ProfileError(t("profile.err.key_object"))
+    blank_hex = raw.get("blank")
+    if not isinstance(blank_hex, str) or len(blank_hex) % 2:
+        raise ProfileError(t("profile.err.key_blank_hex"))
+    try:
+        blank = bytes.fromhex(blank_hex)
+    except ValueError as exc:
+        raise ProfileError(t("profile.err.key_blank_hex")) from exc
+    confidence = str(raw.get("confidence") or "detected")
+    if external and confidence == "confirmed":
+        confidence = "detected"
+    checksum = raw.get("checksum")
+    return KeyLayout(
+        base=_as_int(raw.get("base"), "base"),
+        count=_as_int(raw.get("count"), "count"),
+        stride=_as_int(raw.get("stride"), "stride"),
+        id_offset=_as_int(raw.get("id_offset"), "id_offset"),
+        id_length=_as_int(raw.get("id_length"), "id_length"),
+        blank=blank,
+        checksum=None if checksum is None else _checksum_from_json(checksum, "key"),
+        confidence=confidence,
+    )
 
 
 def _field_from_json(raw: dict) -> Field:
@@ -667,6 +882,19 @@ def profile_from_json(path: Path) -> ModuleProfile:
     fields_raw = raw.get("fields") or []
     if not isinstance(fields_raw, list):
         raise ProfileError(t("profile.err.fields", name=path.name))
+    regions_raw = raw.get("regions") or []
+    if not isinstance(regions_raw, list):
+        raise ProfileError(t("profile.err.regions", name=path.name))
+    wmis = raw.get("vin_wmis") or []
+    if not isinstance(wmis, list) or not all(isinstance(item, str) for item in wmis):
+        raise ProfileError(t("profile.err.wmi_list", name=path.name))
+    keys_status = str(raw.get("keys_status") or "no_map")
+    key_raw = raw.get("key_layout")
+    if key_raw is None:
+        key_layout = None
+    else:
+        key_layout = _key_layout_from_json(key_raw, external=True)
+        keys_status = "layout"
 
     dfpart = raw.get("dfpart_sectors")
     erpart = raw.get("erpart_pages")
@@ -693,6 +921,13 @@ def profile_from_json(path: Path) -> ModuleProfile:
         fields=tuple(_field_from_json(item) for item in fields_raw),
         conversion_enabled=bool(conversion_enabled),
         external=True,
+        vin_wmis=tuple(item.upper() for item in wmis),
+        scan_vin=bool(raw.get("scan_vin", False)),
+        scan_part_numbers=bool(raw.get("scan_part_numbers", False)),
+        keys_status=keys_status,
+        key_layout=key_layout,
+        virginize_mode=str(raw.get("virginize") or "unsupported"),
+        regions=tuple(_region_from_json(item, external=True) for item in regions_raw),
     )
     _check_profile(profile)
     return profile

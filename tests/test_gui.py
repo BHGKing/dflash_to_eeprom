@@ -240,16 +240,56 @@ def test_another_page_can_sit_beside_compare(app):
     import tkinter as tk
 
     frame = tk.Frame(app.notebook)
-    app.add_page("module_info", frame, "gui.menu.tools")
-    app.add_page("module_info", frame, "gui.menu.tools")
+    app.add_page("bench", frame, "gui.menu.tools")
+    app.add_page("bench", frame, "gui.menu.tools")
     labels = [app.notebook.tab(index, "text") for index in range(app.notebook.index("end"))]
-    assert labels == ["Convert", "Compare", "Tools"]
-    app.show_page("module_info")
-    assert app.current_page() == "module_info"
+    assert labels == ["Convert", "Compare", "Module info", "Tools"]
+    app.show_page("bench")
+    assert app.current_page() == "bench"
     app.open_compare()
     assert app.current_page() == "compare"
     app.show_page("convert")
     assert app.current_page() == "convert"
+
+
+def test_module_info_tab_reads_a_direct_eeprom(app, tmp_path):
+    from dflash_eee.decode import vin_check_digit
+
+    body = "SAJAA000012345678"
+    vin = body[:8] + vin_check_digit(body) + body[9:]
+    image = bytearray(b"\xFF" * 2048)
+    image[32:49] = vin.encode("ascii")
+    image[64:78] = b"CX23-14D628-AE"
+    path = tmp_path / "bcm.bin"
+    path.write_bytes(bytes(image))
+    app.profile_var.set("Jaguar - XF BCM / BCMB (supported)")
+    app._on_profile()
+    app.load_path(str(path))
+    assert app.eeprom_image == bytes(image)
+    assert app.result is None
+    assert "EEPROM size" in app.size_var.get()
+    app.show_page("module_info")
+    text = app.module_page.text.get("1.0", "end")
+    assert vin in text
+    assert "Detected" in text
+    assert "CX23-14D628-AE" in text
+    assert "No key-slot map" in text
+    tools = _tools_menu(app)
+    assert tools.entrycget(0, "label") == "Compare files..."
+    assert tools.entrycget(1, "label") == "Virginize..."
+    app.change_language("es")
+    try:
+        assert app.notebook.tab(app._pages["module_info"][0], "text") == "Info del módulo"
+        menu = app.root.nametowidget(app.root["menu"])
+        spanish_tools = None
+        for index in range(menu.index("end") + 1):
+            if menu.type(index) == "cascade" and menu.entrycget(index, "label") == "Herramientas":
+                spanish_tools = menu.nametowidget(menu.entrycget(index, "menu"))
+        assert spanish_tools is not None
+        assert spanish_tools.entrycget(0, "label") == "Comparar archivos..."
+        assert spanish_tools.entrycget(1, "label") == "Virginize..."
+    finally:
+        app.change_language("en")
 
 
 def _label_texts(widget):

@@ -54,6 +54,7 @@ from tkinter import filedialog, messagebox, ttk
 from dflash_eee import __version__
 from dflash_eee.build_info import COMMIT, RELEASE_TAG
 from dflash_eee.compare_view import attach_compare
+from dflash_eee.module_view import attach_module_info, refresh_module_info
 from dflash_eee.converter import convert_bytes
 from dflash_eee.i18n import (
     available_languages,
@@ -150,6 +151,7 @@ class App(object):
         self.path: Path | None = None
         self.data: bytes | None = None
         self.result = None
+        self.eeprom_image = None
         self.drop_enabled = False
         self._trust_dialog = None
         self._trust_dismiss = None
@@ -304,6 +306,7 @@ class App(object):
         # The menu bar is rebuilt on every language change. Each extra tool
         # reattaches its menu item here and refreshes its own page.
         attach_compare(self)
+        attach_module_info(self)
         self._refresh_page_titles()
         self._show_profile()
         self._refresh_result_text()
@@ -551,12 +554,18 @@ class App(object):
             return
         self.profile = profile
         self.result = None
+        self._show_profile()
+        if self.data is not None and self._is_direct_eeprom(self.data):
+            self._profile_stale = False
+            self._present_direct_eeprom()
+            return
+        self.eeprom_image = None
         self._profile_stale = self.data is not None
         self._set_save_enabled(False)
-        self._show_profile()
         self._set_text(self.report, [("warning", t("gui.report.profile_changed") + "\n")])
         self._set_hex(t("gui.hex.cleared"))
         self.status.set(profile_text(profile, "menu_label"))
+        refresh_module_info(self)
 
     def _on_drop(self, payload):
         paths = parse_drop_paths(payload)
@@ -599,19 +608,28 @@ class App(object):
         self.path = file_path
         self.data = data
         self.result = None
+        self.eeprom_image = None
         self._profile_stale = False
         self._set_save_enabled(False)
         self.drop.configure(highlightbackground="#1e3a5f")
         self._refresh_drop_hint()
         self._refresh_size_label()
+        if self._is_direct_eeprom(data):
+            self._present_direct_eeprom()
+            return
         self._set_text(self.report, [("info", t("gui.report.loaded") + "\n")])
         self._set_hex(t("gui.hex.preview_prompt"))
         self.status.set(t("gui.status.loaded", name=file_path.name, n=len(data)))
+        refresh_module_info(self)
 
     def _refresh_size_label(self):
         if self.data is None:
             self.size_var.set(t("gui.size.none"))
             self.size_label.configure(fg="#5c6b78")
+            return
+        if self._is_direct_eeprom(self.data):
+            self.size_var.set(t("gui.size.eeprom", n=len(self.data)))
+            self.size_label.configure(fg="#1f7a4d")
             return
         issue = size_issue(len(self.data), self.profile) if self.profile.conversion_enabled else None
         if issue is None:
@@ -632,11 +650,15 @@ class App(object):
             self._set_hex(t("gui.hex.cleared"))
             self.status.set(profile_text(self.profile, "menu_label"))
             return
+        if self.data is not None and self.result is None and self._is_direct_eeprom(self.data):
+            self._present_direct_eeprom()
+            return
         if self.data is not None and self.result is not None and self.profile.conversion_enabled:
             self.result = convert_bytes(self.data, self.profile, check_size=True)
             rows = [(level, text + "\n") for level, text in report_lines(self.result)]
             self._set_text(self.report, rows)
             if self.result.image is not None:
+                self.eeprom_image = self.result.image
                 self._set_hex(hex_dump(self.result.image))
                 self._set_save_enabled(True)
                 self.status.set(t(
@@ -646,8 +668,10 @@ class App(object):
                 ))
             else:
                 self._set_hex(t("gui.hex.none"))
+                self.eeprom_image = None
                 self._set_save_enabled(False)
                 self.status.set(t("gui.status.failed"))
+            refresh_module_info(self)
             return
         if self.data is not None:
             issue = size_issue(len(self.data), self.profile) if self.profile.conversion_enabled else None
@@ -677,6 +701,11 @@ class App(object):
         if self.data is None:
             messagebox.showinfo(t("gui.dialog.no_dump_title"), t("gui.dialog.no_dump"), parent=self.root)
             return
+        if self._is_direct_eeprom(self.data):
+            self.result = None
+            self._profile_stale = False
+            self._present_direct_eeprom()
+            return
         issue = size_issue(len(self.data), self.profile)
         if issue is not None and issue.level == "error":
             self.result = None
@@ -691,6 +720,7 @@ class App(object):
         rows = [(level, text + "\n") for level, text in report_lines(self.result)]
         self._set_text(self.report, rows)
         if self.result.image is not None:
+            self.eeprom_image = self.result.image
             self._set_hex(hex_dump(self.result.image))
             self._set_save_enabled(True)
             self.status.set(t(
@@ -699,9 +729,11 @@ class App(object):
                 n=len(self.result.image),
             ))
         else:
+            self.eeprom_image = None
             self._set_hex(t("gui.hex.none"))
             self._set_save_enabled(False)
             self.status.set(t("gui.status.failed"))
+        refresh_module_info(self)
 
     def _set_hex(self, text):
         self.hex_view.configure(state="normal")
@@ -712,11 +744,30 @@ class App(object):
     def _set_save_enabled(self, enabled):
         self.save_button.state(["!disabled"] if enabled else ["disabled"])
 
+    def _is_direct_eeprom(self, data):
+        return bool(data) and self.profile.eee_size > 0 and len(data) == self.profile.eee_size
+
+    def _present_direct_eeprom(self):
+        """Show a file that is already the profile's EEPROM size."""
+
+        self.eeprom_image = self.data
+        self._set_text(self.report, [("info", t("gui.report.eeprom_loaded") + "\n")])
+        self._set_hex(hex_dump(self.data))
+        self._set_save_enabled(True)
+        name = self.path.name if self.path is not None else ""
+        self.status.set(t("gui.status.eeprom_loaded", name=name, n=len(self.data)))
+        refresh_module_info(self)
+
     def save(self):
-        if self.result is None or self.result.image is None:
+        image = None
+        if self.result is not None and self.result.image is not None:
+            image = self.result.image
+        elif self.eeprom_image:
+            image = self.eeprom_image
+        if image is None:
             messagebox.showinfo(t("gui.dialog.nothing_title"), t("gui.dialog.nothing"), parent=self.root)
             return
-        if self.result.errors or self.result.corrupt:
+        if self.result is not None and (self.result.errors or self.result.corrupt):
             proceed = messagebox.askokcancel(
                 t("gui.dialog.save_anyway_title"),
                 t("gui.dialog.save_anyway"),
@@ -740,11 +791,11 @@ class App(object):
         if not selected:
             return
         try:
-            Path(selected).write_bytes(self.result.image)
+            Path(selected).write_bytes(image)
         except OSError as exc:
             messagebox.showerror(t("gui.dialog.cannot_save"), str(exc), parent=self.root)
             return
-        self.status.set(t("gui.status.saved", path=selected, n=len(self.result.image)))
+        self.status.set(t("gui.status.saved", path=selected, n=len(image)))
         messagebox.showinfo(
             t("gui.dialog.saved_title"),
             t("gui.dialog.saved", path=selected, notes=profile_text(self.profile, "write_notes")),

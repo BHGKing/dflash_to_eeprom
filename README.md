@@ -62,7 +62,7 @@ python3 -m pip install -r requirements.txt
 python3 gui.py
 ```
 
-Open a D-Flash dump with Browse or by dropping the file on the window. Pick the module. Convert. Read the validation panel: wrong size, no `0xFACF` sectors, bad record codes and addresses past the EEE are called out there. The hex view is the file you are about to program. Save writes that file only. If the conversion reported errors, Save asks before it writes.
+The window is a notebook. **Convert** is the D-Flash conversion. **Compare** checks two files. **Module info** reads VIN, mileage and keys from the EEPROM image. Open a D-Flash dump with Browse or by dropping the file on the window. Pick the module. Convert. Read the validation panel: wrong size, no `0xFACF` sectors, bad record codes and addresses past the EEE are called out there. The hex view is the file you are about to program. Save writes that file only. If the conversion reported errors, Save asks before it writes. A file that is already the module's EEPROM size is shown directly, without a conversion.
 
 You can also start with a file already chosen:
 
@@ -109,6 +109,20 @@ result.ranges[0].offset, result.ranges[0].bytes_a, result.ranges[0].bytes_b
 ### Windows executable
 
 `build.cmd` installs PyInstaller and tkinterdnd2, then builds `dist\dflash_to_eee.exe` from `dflash_to_eee.spec`. The GitHub Actions workflow `windows-exe` runs the tests on Windows and uploads that executable as a build artifact. A version tag publishes the same exe on the Releases page; see Releasing. That exe is not code-signed, so Windows SmartScreen warns the first time you open it. Check the download, or build from source, before you choose Run anyway. See Verifying downloads / Windows SmartScreen. Drop-in profiles can be placed in a `profiles` folder next to the exe.
+
+## Module info, keys and virginize
+
+The **Module info** tab sits beside Convert and Compare. It reads the EEPROM image from the last conversion, or a file you opened that is already that module's EEPROM size.
+
+**Confirmed** means the profile names the offset. On BMW FRM3 that is the VIN at `0xFD3`, the production and programming dates, and the HW-NR, SW-NR, ZB-NR and S part numbers from the original decoder. If those VIN bytes fail the ISO 3779 check digit, the tab says so. It does not call them a valid VIN.
+
+**Detected** means a pattern, not a published address. The scan keeps a 17-character VIN only when the world manufacturer identifier is on that profile's list and the check digit matches. Every copy is listed, and the tab says whether the copies agree. Jaguar part numbers of the shape `CX23-14D628-AE` are detected the same way. Mileage and option coding are not in the published maps used here, so the tab says they are absent.
+
+FRM3 is a footwell module, not an immobilizer, so it has no key slots. No key-slot map for the Jaguar XF BCM EEPROM is published here, so the tab does not invent slots. Jaguar keys are programmed with SDD. The KVM/RFA is the keyless module, and that profile stays experimental.
+
+**Tools → Virginize...** writes a new file. It does not modify the original. The confirmation lists every changed range (offset, length, old bytes, new bytes). Jaguar XF BCM erases only the detected VIN copies to `0xFF`. Part numbers, key bytes and unknown regions stay. No checksum is rewritten, because none is published. JLR SDD is still required, and the result has to be checked on the bench before it is trusted. BMW FRM3 virginize is refused: public notes give the VIN address and say this tool does not clear mileage or checksums, and the programmer scripts that offer a virgin option do not publish the bytes.
+
+The optional D-Flash journal is a file this tool can replay. The supported write path is still: set DFPART and ERPART, then program the EEPROM image into EEE.
 
 ## Verifying downloads / Windows SmartScreen
 
@@ -192,7 +206,31 @@ python3 dflash_to_eee.py --lang es compare original.bin readback.bin --report di
 
 `--strict` exits with status 2 when the length is not the profile's D-Flash size or the journal looks corrupt. The two-argument form does not: a longer file is still replayed from its first 32 KB, which is what the original script did.
 
-`compare` checks two dumps and exits 1 when the bytes differ. The details are in Compare two dumps.
+## Module info, keys and virginize
+
+The **Module info** tab sits beside Convert and Compare. It reads the EEPROM image from the last conversion, or a file you opened that is already that module's EEPROM size.
+
+**Confirmed** means the profile names the offset. On BMW FRM3 that is the VIN at `0xFD3`, the production and programming dates, and the HW-NR, SW-NR, ZB-NR and S part numbers from the original decoder. If those VIN bytes fail the ISO 3779 check digit, the tab says so. It does not call them a valid VIN.
+
+**Detected** means a pattern, not a published address. The scan keeps a 17-character VIN only when the world manufacturer identifier is on that profile's list and the check digit matches. Every copy is listed, and the tab says whether the copies agree. Jaguar part numbers of the shape `CX23-14D628-AE` are detected the same way. Mileage and option coding are not in the published maps used here, so the tab says they are absent.
+
+FRM3 is a footwell module, not an immobilizer, so it has no key slots. No key-slot map for the Jaguar XF BCM EEPROM is published here, so the tab does not invent slots. Jaguar keys are programmed with SDD. The KVM/RFA is the keyless module, and that profile stays experimental.
+
+**Tools → Virginize...** writes a new file. It does not modify the original. The confirmation lists every changed range (offset, length, old bytes, new bytes). Jaguar XF BCM erases only the detected VIN copies to `0xFF`. Part numbers, key bytes and unknown regions stay. No checksum is rewritten, because none is published. JLR SDD is still required, and the result has to be checked on the bench before it is trusted. BMW FRM3 virginize is refused: public notes give the VIN address and say this tool does not clear mileage or checksums, and the programmer scripts that offer a virgin option do not publish the bytes.
+
+The optional D-Flash journal is a file this tool can replay. The supported write path is still: set DFPART and ERPART, then program the EEPROM image into EEE.
+
+`info` reads an EEPROM image, or a D-Flash dump that the selected profile can replay. `keys` prints the key-slot section of that reading. `virginize` writes a new EEPROM file and never overwrites the source.
+
+```bash
+python3 dflash_to_eee.py info eeprom.bin --profile jlr_xf_bcm
+python3 dflash_to_eee.py --profile bmw_frm3 info eeprom.bin --json
+python3 dflash_to_eee.py keys eeprom.bin --profile jlr_xf_bcm
+python3 dflash_to_eee.py virginize eeprom.bin virgin.bin --profile jlr_xf_bcm --report changes.txt
+python3 dflash_to_eee.py virginize eeprom.bin virgin.bin --profile jlr_xf_bcm --journal virgin.dflash
+```
+
+`--json` prints one JSON object on stdout. `--journal` is optional. It packs a D-Flash journal this tool can replay. It is not the repair procedure, and writing that file over raw D-Flash has not been proven on a car. Program the EEPROM image into the EEE partition after setting DFPART and ERPART.
 
 From Python:
 
@@ -237,6 +275,15 @@ Built-in profiles live in `dflash_eee/profiles.py`. A shop can also drop a JSON 
 
 `eee_size` must equal `erpart_pages * 256` when you mark the partition confirmed. The AN3490 rule is checked: `(128 - DFPART) / ERPART` at least 8, and at least 12 EEE sectors when ERPART is 1. Do not add field offsets unless you have measured them on dumps from that module. The FRM3 VIN and part-number offsets are not a generic map.
 
+Optional decoding keys, all omitted by default:
+
+- `scan_vin` and `vin_wmis`: search for a 17-character VIN whose first three characters are in the list and whose ISO 3779 check digit matches. Hits are labeled detected.
+- `scan_part_numbers`: search for the published Jaguar shape `CX23-14D628-AE`. Hits are labeled detected.
+- `regions`: a list of `{label, offset, length, encoding, confidence, clear_on_virgin, checksum}`. `encoding` is `ascii`, `uint-be`, `uint-le` or `hex`. A drop-in file cannot mark a region confirmed; `confirmed` is stored as detected. `checksum` is `{algorithm, offset, start, length}` with `algorithm` of `sum8`, `xor8` or `sum16be`. The stored bytes must sit outside the covered span.
+- `keys_status`: `not_applicable`, `no_map` or `layout`.
+- `key_layout`: `{base, count, stride, id_offset, id_length, blank, checksum, confidence}`. `blank` is hex. The checksum is relative to each slot. A drop-in layout is stored as detected. The window only displays slots. It does not edit them.
+- `virginize`: `unsupported`, `clear_vin`, or `clear_vin_and_keys`. Clearing key slots requires a layout and a checksum, and that checksum is recomputed after the wipe. `clear_vin` erases detected VIN copies to `0xFF` and any region with `clear_on_virgin`. It does not invent a checksum.
+
 ## Tests
 
 ```bash
@@ -245,7 +292,7 @@ python3 -m pytest -q
 
 `ci/input/dflash` is replayed with the original two-argument command. Where `ci/input/eee` has a paired image, the bytes must match. Log lines (VIN, dates, part numbers, warnings, the short-file exception) must match `ci/input/logs`. Synthetic journals cover overwrite order, the empty-record quirk, unknown commands, a short file, an unrecognized layout, and the 2 KB profile. `tests/test_compare.py` checks equal buffers, a single changed byte, several ranges, different lengths, and empty files.
 
-`ci/run_ci.sh` runs that same suite.
+`ci/run_ci.sh` runs that same suite. `tests/test_module_info.py` builds synthetic EEPROM images for the VIN scan, the key-slot layout, virginize and the journal round-trip. It does not read customer dumps.
 
 ## Web upload
 
