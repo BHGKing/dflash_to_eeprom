@@ -1,6 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
 # PyInstaller spec for a single-file Windows (or local) GUI executable.
 # Build with: pyinstaller --noconfirm --clean dflash_to_eee.spec
+#
+# The release workflow writes dflash_eee/build_info.py (RELEASE_TAG and
+# COMMIT) after the tests and before this spec runs. A local build leaves
+# those strings empty, and the app then says it is running from a build
+# with no release tag.
 
 import os
 

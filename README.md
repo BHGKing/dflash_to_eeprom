@@ -1,5 +1,9 @@
 # D-Flash to EEPROM
 
+## This software is free
+
+dflash_to_eee is free, open-source software under the BSD-3-Clause license. The license allows other people to redistribute the program, including for a fee. The official version is free. If someone charged you for it, you paid for something you could get free from the official page: https://github.com/BHGKing/dflash_to_eeprom/releases
+
 Rebuild the emulated EEPROM (EEE) of a Freescale/NXP S12XE microcontroller from a raw D-Flash dump. The original tool, by Ben van Leeuwen Autotechniek, repaired BMW FRM3 modules whose MC9S12XEQ384 had lost its EEPROM partition. This version keeps that decoder, turns it into a library the command line, desktop window and web upload all share, and adds module profiles for the other S12XE layouts that public repair notes actually describe.
 
 BSD-3-Clause. Copyright 2017-2018 Ben van Leeuwen Autotechniek. Copyright 2026 Jose.
@@ -72,11 +76,47 @@ python3 gui.py dump.bin
 
 ### Windows executable
 
-`build.cmd` installs PyInstaller and tkinterdnd2, then builds `dist\dflash_to_eee.exe` from `dflash_to_eee.spec`. The GitHub Actions workflow `windows-exe` runs the tests on Windows and uploads that executable as a build artifact. A version tag publishes the same exe on the Releases page; see Releasing. Drop-in profiles can be placed in a `profiles` folder next to the exe.
+`build.cmd` installs PyInstaller and tkinterdnd2, then builds `dist\dflash_to_eee.exe` from `dflash_to_eee.spec`. The GitHub Actions workflow `windows-exe` runs the tests on Windows and uploads that executable as a build artifact. A version tag publishes the same exe on the Releases page; see Releasing. That exe is not code-signed, so Windows SmartScreen warns the first time you open it. Check the download, or build from source, before you choose Run anyway. See Verifying downloads / Windows SmartScreen. Drop-in profiles can be placed in a `profiles` folder next to the exe.
+
+## Verifying downloads / Windows SmartScreen
+
+The Windows file on the Releases page is not code-signed. The first time you open it, Windows SmartScreen shows "Windows protected your PC". That is the dialog Windows uses for an unsigned program downloaded from the internet. The executable is an open-source build from the public Release workflow. Click **More info**, then **Run anyway**, only after the hash matches. If you would rather not run the downloaded exe, build it from the same tag.
+
+Download `dflash_to_eee.exe` and `SHA256SUMS.txt` from the same release.
+
+PowerShell, in the folder where you saved the exe:
+
+```powershell
+Get-FileHash .\dflash_to_eee.exe -Algorithm SHA256
+```
+
+`certutil` prints the same hash:
+
+```bat
+certutil -hashfile dflash_to_eee.exe SHA256
+```
+
+`SHA256SUMS.txt` contains that hash in lowercase, two spaces, then `dflash_to_eee.exe`. The release notes print the same hash, and they link the tag, the commit, and the Actions run that built the exe. If the hashes differ, do not run the file.
+
+The first time the program starts, it explains the SmartScreen warning, states that the official copy is free, and shows the SHA-256 of the file that is running. That notice is stored in `%APPDATA%\dflash_to_eee\config.json` so it is not shown again. **Help → Verify this copy** computes the hash again. When the exe was built by the release workflow and GitHub can be reached, it downloads `SHA256SUMS.txt` for that version tag and reports match, mismatch, or that it could not check. The request times out after a few seconds. Starting the program does not contact the network. A source checkout says it is running from source instead of hashing the Python interpreter.
+
+### Build from source
+
+Python 3.10 or newer. Check out the tag named in the release notes.
+
+```bash
+git clone https://github.com/BHGKing/dflash_to_eeprom.git
+cd dflash_to_eeprom
+git checkout v1.0.0
+python3 -m pip install -r requirements.txt
+python3 gui.py
+```
+
+On Windows, `build.cmd` in that checkout installs PyInstaller and tkinterdnd2 and writes `dist\dflash_to_eee.exe`. A local build has no publisher signature either. You produced it from the source you checked out.
 
 ## Releasing
 
-Pushing a version tag runs `.github/workflows/release.yml`. That workflow checks out the tag, runs the tests, builds `dflash_to_eee.exe` with `dflash_to_eee.spec`, and publishes a GitHub Release for the tag. The release gets the exe, `SHA256SUMS.txt` (SHA-256, two spaces, then the file name), and the notes GitHub generates from commits since the previous tag. It uses the built-in `GITHUB_TOKEN` with `contents: write`. No other secret is required.
+Pushing a version tag runs `.github/workflows/release.yml`. That workflow checks out the tag, runs the tests, writes the tag and commit into the executable, builds `dflash_to_eee.exe` with `dflash_to_eee.spec`, and publishes a GitHub Release for the tag. The release gets the exe, `SHA256SUMS.txt` (SHA-256, two spaces, then the file name), and release notes. The notes open with a **This software is free** callout, then a **Verify your download** section (why SmartScreen warns, the SHA-256, the PowerShell command, the source tag and commit, and the Actions run that built the exe), and then the notes GitHub generates from commits since the previous tag. It uses the built-in `GITHUB_TOKEN` with `contents: write`. No other secret is required.
 
 From an up-to-date `master`:
 
@@ -87,11 +127,11 @@ git tag -a v1.0.0 -m "v1.0.0"
 git push origin v1.0.0
 ```
 
-The release shows up on the repository Releases page when the workflow finishes. On Windows, check the download with `Get-FileHash .\dflash_to_eee.exe -Algorithm SHA256` and compare it to `SHA256SUMS.txt` (the file stores the hash in lowercase).
+The release shows up on the repository Releases page when the workflow finishes. Check the download before you run it. The steps are under Verifying downloads / Windows SmartScreen.
 
 Creating the release in the GitHub UI does the same work. Open **Releases → Draft a new release**, choose or create the tag `v1.0.0` on `master`, generate the notes if you want them filled in now, and publish. Publishing creates the tag, which starts the workflow and attaches the exe and checksum to that release. A draft stays a draft; the files are added when the build finishes, and you publish it yourself.
 
-Tags must look like `v1.0.0`. A suffix such as `v1.0.0-rc.1` is published as a pre-release. To rebuild a tag that already exists, open **Actions → Release → Run workflow** and enter that tag. The new exe and checksum replace the previous files. The notes are left as they are.
+Tags must look like `v1.0.0`. A suffix such as `v1.0.0-rc.1` is published as a pre-release. To rebuild a tag that already exists, open **Actions → Release → Run workflow** and enter that tag. The new exe and checksum replace the previous files. The notes are rewritten in the same way, so the SHA-256 in the verify section matches the file that was just built.
 
 ## Command line
 

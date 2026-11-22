@@ -2,6 +2,8 @@ name: Release
 
 # Pushing a version tag (v1.0.0) builds the Windows executable and publishes
 # a GitHub Release for that tag. workflow_dispatch rebuilds an existing tag.
+# The exe is unsigned. Release notes start with a free-software callout and
+# a "Verify your download" section (SHA-256, source tag and commit, this run).
 # Authentication is the built-in GITHUB_TOKEN only.
 
 on:
@@ -48,6 +50,14 @@ jobs:
         with:
           ref: ${{ steps.version.outputs.tag }}
 
+      - name: Record the checked-out commit
+        id: source
+        shell: pwsh
+        run: |
+          $sha = (git rev-parse HEAD).Trim().ToLower()
+          if ($sha -notmatch '^[0-9a-f]{40}$') { throw "unexpected commit '$sha'" }
+          "commit=$sha" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8NoBOM
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -57,6 +67,13 @@ jobs:
 
       - name: Run tests
         run: python -m pytest -q
+
+      - name: Embed the release tag
+        shell: pwsh
+        env:
+          DFLASH_RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          DFLASH_RELEASE_COMMIT: ${{ steps.source.outputs.commit }}
+        run: python ci/release_publish.py embed
 
       - name: Build the single-file GUI
         run: pyinstaller --noconfirm --clean dflash_to_eee.spec
@@ -80,6 +97,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
+          SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $false
@@ -88,10 +106,44 @@ jobs:
           gh release view $tag --repo $repo --json url,isDraft
           $exists = ($LASTEXITCODE -eq 0)
           $PSNativeCommandUseErrorActionPreference = $true
+
+          $utf8 = New-Object System.Text.UTF8Encoding $false
+          $sumsText = [System.IO.File]::ReadAllText((Join-Path (Get-Location) "dist\SHA256SUMS.txt"))
+          $hash = ($sumsText.Trim() -split '\s+')[0].ToLower()
+          if ($hash -notmatch '^[0-9a-f]{64}$') { throw "SHA256SUMS.txt has no SHA-256" }
+
+          $generatedPath = Join-Path (Get-Location) "dist\generated-notes.md"
+          $notesPath = Join-Path (Get-Location) "dist\RELEASE_NOTES.md"
+          $body = "Release $tag."
+          $PSNativeCommandUseErrorActionPreference = $false
+          $rawLines = @(gh api --method POST "repos/$repo/releases/generate-notes" -f tag_name="$tag")
+          $apiCode = $LASTEXITCODE
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ($apiCode -eq 0 -and $rawLines.Count -gt 0) {
+            try {
+              $parsed = ($rawLines -join "`n") | ConvertFrom-Json
+              if ($parsed.body) { $body = [string]$parsed.body }
+            } catch {
+              Write-Host "Using a short changelog because generate-notes did not return JSON."
+            }
+          } else {
+            Write-Host "Using a short changelog because generate-notes failed."
+          }
+          [System.IO.File]::WriteAllText($generatedPath, $body, $utf8)
+
+          python ci/release_publish.py notes --generated "$generatedPath" --output "$notesPath" --tag "$tag" --hash "$hash" --commit "$env:SOURCE_COMMIT" --run-id "$env:GITHUB_RUN_ID" --repository "$repo"
+          if ($LASTEXITCODE -ne 0) { throw "could not compose release notes" }
+          $notes = [System.IO.File]::ReadAllText($notesPath)
+          if ($notes -notlike "*This software is free*") { throw "release notes are missing the free-software callout" }
+          if ($notes -notlike "*Verify your download*") { throw "release notes are missing the verify section" }
+          if ($notes -notlike "*$hash*") { throw "release notes are missing the SHA-256" }
+          if ($notes -notlike "*Get-FileHash .\dflash_to_eee.exe -Algorithm SHA256*") { throw "release notes are missing the hash command" }
+
           if ($exists) {
             gh release upload $tag dist/dflash_to_eee.exe dist/SHA256SUMS.txt --repo $repo --clobber
+            gh release edit $tag --repo $repo --notes-file "$notesPath"
           } else {
-            $create = @("release", "create", $tag, "dist/dflash_to_eee.exe", "dist/SHA256SUMS.txt", "--repo", $repo, "--title", $tag, "--generate-notes", "--verify-tag")
+            $create = @("release", "create", $tag, "dist/dflash_to_eee.exe", "dist/SHA256SUMS.txt", "--repo", $repo, "--title", $tag, "--notes-file", $notesPath, "--verify-tag")
             if ($tag -match '-') { $create += "--prerelease" }
             & gh @create
           }

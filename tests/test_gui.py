@@ -79,6 +79,71 @@ def test_gui_blocks_cas4_and_clears_a_stale_image(app):
     assert "CAS4" in _report(app)
 
 
+def _label_texts(widget):
+    texts = []
+    for child in widget.winfo_children():
+        if child.winfo_class() == "Label":
+            texts.append(child.cget("text"))
+        texts.extend(_label_texts(child))
+    return texts
+
+
+def test_window_says_the_official_copy_is_free(app):
+    assert "free" in app.root.title().lower()
+    assert any("official download is free" in text.lower() for text in _label_texts(app.root))
+
+
+def test_help_menu_can_verify_this_copy(app):
+    menu = app.root.nametowidget(app.root["menu"])
+    help_menu = None
+    for index in range(menu.index("end") + 1):
+        if menu.type(index) != "cascade":
+            continue
+        if menu.entrycget(index, "label") == "Help":
+            help_menu = menu.nametowidget(menu.entrycget(index, "menu"))
+    assert help_menu is not None
+    labels = [
+        help_menu.entrycget(index, "label")
+        for index in range(help_menu.index("end") + 1)
+        if help_menu.type(index) == "command"
+    ]
+    assert "Verify this copy" in labels
+    assert "About" in labels
+
+
+def test_first_run_notice_is_shown_once_and_does_not_use_the_network(app, tmp_path, monkeypatch):
+    path = tmp_path / "config.json"
+    monkeypatch.setattr("gui.config_path", lambda: path)
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("network used during the first-run notice")
+
+    monkeypatch.setattr("gui.verify_release", boom)
+    app.offer_first_run_notice()
+    body = app._trust_body.get("1.0", "end")
+    assert "Windows protected your PC" in body
+    assert "you paid for something you could get free" in body
+    assert "source checkout" in body
+    assert not path.exists()
+    app._trust_dismiss()
+    assert path.is_file()
+    from dflash_eee.integrity import notice_seen
+    assert notice_seen(path)
+    assert not app._trust_dialog.winfo_exists()
+    app.offer_first_run_notice()
+    assert not app._trust_dialog.winfo_exists()
+
+
+def test_verify_from_source_does_not_download(app, monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise AssertionError("network used for a source checkout")
+
+    monkeypatch.setattr("gui.verify_release", boom)
+    app.verify_this_copy()
+    assert "source" in app._trust_status.get().lower()
+    app._trust_dismiss()
+
+
 def test_gui_experimental_jaguar_profile_is_labelled(app):
     app.profile_var.set("Jaguar - XF BCM / BCMB (supported)")
     app._on_profile()
