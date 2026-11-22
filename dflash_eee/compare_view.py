@@ -28,31 +28,31 @@ from dflash_eee.compare import (
     visible_rows,
     write_report,
 )
+from dflash_eee.i18n import t
 from dflash_eee.report import shorten_middle
-
-HINT = (
-    "Pick two dumps, or use Last conversion for the EEPROM image just built "
-    "in the main window. This only reads the files."
-)
 
 
 def attach_compare(app) -> None:
-    """Add Tools → Compare files… to an existing window."""
+    """Add Tools → Compare files... to the current menu bar.
 
-    if getattr(app, "_compare_attached", False):
-        return
+    The desktop window rebuilds its menu when the language changes, so this
+    runs after every rebuild. It does not keep a one-shot flag.
+    """
+
     menu_name = app.root.cget("menu")
     if not menu_name:
         return
     bar = app.root.nametowidget(menu_name)
+    tools_label = t("gui.menu.tools")
+    if _cascade_index(bar, tools_label) is not None:
+        return
     tools = tk.Menu(bar, tearoff=0)
-    tools.add_command(label="Compare files...", command=lambda: open_compare_window(app))
-    help_index = _cascade_index(bar, "Help")
+    tools.add_command(label=t("gui.menu.compare"), command=lambda: open_compare_window(app))
+    help_index = _cascade_index(bar, t("gui.menu.help"))
     if help_index is None:
-        bar.add_cascade(label="Tools", menu=tools)
+        bar.add_cascade(label=tools_label, menu=tools)
     else:
-        bar.insert_cascade(help_index, label="Tools", menu=tools)
-    app._compare_attached = True
+        bar.insert_cascade(help_index, label=tools_label, menu=tools)
     app._compare_window = getattr(app, "_compare_window", None)
     app.open_compare = lambda: open_compare_window(app)
 
@@ -105,7 +105,7 @@ class CompareWindow:
     def __init__(self, app):
         self.app = app
         self.top = tk.Toplevel(app.root)
-        self.top.title("Compare dumps")
+        self.top.title(t("gui.compare.title"))
         self.top.geometry("1280x760")
         self.top.minsize(860, 520)
         self.top.configure(bg="#e6edf3")
@@ -141,6 +141,12 @@ class CompareWindow:
         # Tests pin the visible row count. A live window leaves this false so
         # a resize shows more rows without drawing the whole file.
         self._page_locked = False
+        self.origin_a = ""
+        self.origin_b = ""
+        self.source_a = ""
+        self.source_b = ""
+        self._status_key = "gui.compare.choose_hex"
+        self._status_kwargs: dict = {}
 
         self._build()
         self._prefill_last_conversion()
@@ -153,6 +159,7 @@ class CompareWindow:
         self.top.bind("<Home>", self._on_home)
         self.top.bind("<End>", self._on_end)
         self.top.bind("<Configure>", self._on_window_configure)
+        self.app._compare_window = self
 
     def is_open(self) -> bool:
         try:
@@ -168,13 +175,45 @@ class CompareWindow:
         except tk.TclError:
             pass
 
+    def refresh_language(self) -> None:
+        """Apply the current catalog to this window, including an open compare."""
+
+        self.top.title(t("gui.compare.title"))
+        self.title_label.configure(text=t("gui.compare.title"))
+        self.subtitle_label.configure(text=t("gui.compare.subtitle"))
+        self.file_a_label.configure(text=t("gui.compare.file_a"))
+        self.file_b_label.configure(text=t("gui.compare.file_b"))
+        self.pane_a_label.configure(text=t("gui.compare.file_a"))
+        self.pane_b_label.configure(text=t("gui.compare.file_b"))
+        self.only_check.configure(text=t("gui.compare.only_rows"))
+        self.prev_btn.configure(text=t("gui.compare.previous"))
+        self.next_btn.configure(text=t("gui.compare.next"))
+        self.export_text_btn.configure(text=t("gui.compare.export_text"))
+        self.export_csv_btn.configure(text=t("gui.compare.export_csv"))
+        self.hint_label.configure(text=t("gui.compare.hint"))
+        self.range_heading.configure(text=t("gui.compare.range_heading"))
+        for button in (self.browse_a, self.browse_b):
+            button.configure(text=t("gui.button.browse"))
+        for button in (self.last_a, self.last_b):
+            button.configure(text=t("gui.compare.last_button"))
+        self._apply_side_label("a")
+        self._apply_side_label("b")
+        if self.result is None:
+            self.summary.configure(text=t("gui.compare.choose"))
+        else:
+            tone = "#1f7a4d" if self.result.identical else "#9b2335"
+            self.summary.configure(text=self.result.summary_text(), fg=tone)
+        self._note(self._status_key, **self._status_kwargs)
+        self._render_hex()
+        self._render_ranges()
+
     def browse(self, side: str) -> None:
         selected = filedialog.askopenfilename(
             parent=self.top,
-            title="Choose file %s" % side.upper(),
+            title=t("gui.compare.choose_side", side=side.upper()),
             filetypes=[
-                ("Binary dumps", "*.bin *.eep *.dflash *.dump *.eee *.rom"),
-                ("All files", "*.*"),
+                (t("gui.filetypes.dump"), "*.bin *.eep *.dflash *.dump *.eee *.rom"),
+                (t("gui.filetypes.all"), "*.*"),
             ],
         )
         if selected:
@@ -185,7 +224,11 @@ class CompareWindow:
         try:
             data = file_path.read_bytes()
         except OSError as exc:
-            messagebox.showerror("Cannot open file", "%s: %s" % (file_path, exc), parent=self.top)
+            messagebox.showerror(
+                t("gui.dialog.cannot_open"),
+                t("gui.compare.open_error", path=file_path, error=exc),
+                parent=self.top,
+            )
             return False
         self._set_side(side, data, file_path.name, file_path)
         return True
@@ -198,25 +241,22 @@ class CompareWindow:
         if not image:
             if not quiet:
                 messagebox.showinfo(
-                    "No conversion",
-                    "Convert a dump in the main window first. The EEPROM image can then be compared here.",
+                    t("gui.compare.no_conversion_title"),
+                    t("gui.compare.no_conversion"),
                     parent=self.top,
                 )
             return False
         source = getattr(self.app, "path", None)
-        if source is not None:
-            label = "%s (last conversion)" % Path(source).name
-        else:
-            label = "last conversion"
+        source_name = "" if source is None else Path(source).name
         data = image if isinstance(image, bytes) else bytes(image)
-        self._set_side(side, data, label, None)
+        self._set_side(side, data, source_name, None, origin="last")
         return True
 
     def export_to(self, path, kind: str | None = None) -> None:
         if self.result is None:
-            raise RuntimeError("Compare two files before exporting.")
+            raise RuntimeError(t("gui.compare.export_before"))
         write_report(path, self.result, self._report_name("a"), self._report_name("b"), kind)
-        self.status.set("Wrote %s" % path)
+        self._note("cli.compare.wrote", path=path)
 
     def set_top(self, top: int) -> None:
         page = self.page_rows if self.page_rows > 0 else 1
@@ -235,7 +275,12 @@ class CompareWindow:
         self._scroll_to_selected()
         self._render_ranges()
         item = self.result.ranges[index]
-        self.status.set("Range %d of %d, at offset %08X." % (index + 1, len(self.result.ranges), item.offset))
+        self._note(
+            "gui.compare.range_status",
+            n=index + 1,
+            total=len(self.result.ranges),
+            offset="%08X" % item.offset,
+        )
 
     def next_difference(self) -> None:
         if self.result is None or not self.result.ranges:
@@ -244,7 +289,7 @@ class CompareWindow:
             self.select_range(0)
             return
         if self.selected + 1 >= len(self.result.ranges):
-            self.status.set("Already at the last difference.")
+            self._note("gui.compare.last_diff")
             return
         self.select_range(self.selected + 1)
 
@@ -255,7 +300,7 @@ class CompareWindow:
             self.select_range(0)
             return
         if self.selected == 0:
-            self.status.set("Already at the first difference.")
+            self._note("gui.compare.first_diff")
             return
         self.select_range(self.selected - 1)
 
@@ -263,10 +308,14 @@ class CompareWindow:
         header = tk.Frame(self.top, bg="#1e3a5f", height=56)
         header.pack(fill="x")
         header.pack_propagate(False)
-        tk.Label(header, text="Compare dumps", bg="#1e3a5f", fg="#f7f4ef",
-                 font=self.ui_bold, anchor="w").pack(fill="x", padx=16, pady=(8, 0))
-        tk.Label(header, text="Side-by-side hex. Changed bytes are highlighted. Scrolling stays locked.",
-                 bg="#1e3a5f", fg="#c5d4e4", font=self.ui_small, anchor="w").pack(fill="x", padx=16)
+        self.title_label = tk.Label(header, text=t("gui.compare.title"), bg="#1e3a5f", fg="#f7f4ef",
+                                    font=self.ui_bold, anchor="w")
+        self.title_label.pack(fill="x", padx=16, pady=(8, 0))
+        self.subtitle_label = tk.Label(
+            header, text=t("gui.compare.subtitle"),
+            bg="#1e3a5f", fg="#c5d4e4", font=self.ui_small, anchor="w",
+        )
+        self.subtitle_label.pack(fill="x", padx=16)
 
         body = tk.Frame(self.top, bg="#e6edf3")
         body.pack(fill="both", expand=True, padx=12, pady=10)
@@ -275,28 +324,33 @@ class CompareWindow:
         card.pack(fill="x", pady=(0, 8))
         inner = tk.Frame(card, bg="#ffffff")
         inner.pack(fill="x", padx=12, pady=10)
-        self.label_a = tk.StringVar(value="No file")
-        self.label_b = tk.StringVar(value="No file")
-        self._file_row(inner, "File A", "a", self.label_a).pack(fill="x", pady=(0, 6))
-        self._file_row(inner, "File B", "b", self.label_b).pack(fill="x")
+        self.label_a = tk.StringVar(value=t("gui.compare.no_file"))
+        self.label_b = tk.StringVar(value=t("gui.compare.no_file"))
+        self._file_row(inner, "a", self.label_a).pack(fill="x", pady=(0, 6))
+        self._file_row(inner, "b", self.label_b).pack(fill="x")
 
         tools = tk.Frame(inner, bg="#ffffff")
         tools.pack(fill="x", pady=(8, 0))
         self.only = tk.BooleanVar(value=False)
-        ttk.Checkbutton(tools, text="Only differing rows", variable=self.only,
-                        command=self._toggle_only).pack(side="left")
-        self.prev_btn = ttk.Button(tools, text="Previous difference", command=self.previous_difference)
+        self.only_check = ttk.Checkbutton(
+            tools, text=t("gui.compare.only_rows"), variable=self.only, command=self._toggle_only,
+        )
+        self.only_check.pack(side="left")
+        self.prev_btn = ttk.Button(tools, text=t("gui.compare.previous"), command=self.previous_difference)
         self.prev_btn.pack(side="left", padx=(12, 0))
-        self.next_btn = ttk.Button(tools, text="Next difference", command=self.next_difference)
+        self.next_btn = ttk.Button(tools, text=t("gui.compare.next"), command=self.next_difference)
         self.next_btn.pack(side="left", padx=(6, 0))
-        self.export_csv_btn = ttk.Button(tools, text="Export CSV...", command=lambda: self._export("csv"))
+        self.export_csv_btn = ttk.Button(tools, text=t("gui.compare.export_csv"), command=lambda: self._export("csv"))
         self.export_csv_btn.pack(side="right")
-        self.export_text_btn = ttk.Button(tools, text="Export text...", command=lambda: self._export("text"))
+        self.export_text_btn = ttk.Button(tools, text=t("gui.compare.export_text"), command=lambda: self._export("text"))
         self.export_text_btn.pack(side="right", padx=(0, 6))
 
-        tk.Label(inner, text=HINT, bg="#ffffff", fg="#5c6b78", font=self.ui_small,
-                 anchor="w", justify="left", wraplength=1100).pack(fill="x", pady=(8, 4))
-        self.summary = tk.Label(inner, text="Choose file A and file B.", bg="#ffffff", fg="#1c2833",
+        self.hint_label = tk.Label(
+            inner, text=t("gui.compare.hint"), bg="#ffffff", fg="#5c6b78", font=self.ui_small,
+            anchor="w", justify="left", wraplength=1100,
+        )
+        self.hint_label.pack(fill="x", pady=(8, 4))
+        self.summary = tk.Label(inner, text=t("gui.compare.choose"), bg="#ffffff", fg="#1c2833",
                                 font=self.mono, anchor="w", justify="left", wraplength=1100)
         self.summary.pack(fill="x")
 
@@ -311,20 +365,31 @@ class CompareWindow:
 
         status_bar = tk.Frame(self.top, bg="#d5dee6", height=26)
         status_bar.pack(fill="x", side="bottom")
-        self.status = tk.StringVar(value="Choose two files to compare.")
+        self.status = tk.StringVar(value=t(self._status_key))
         tk.Label(status_bar, textvariable=self.status, bg="#d5dee6", fg="#1c2833",
                  font=self.ui_small, anchor="w").pack(fill="x", padx=12, pady=3)
         self._refresh_actions()
 
-    def _file_row(self, parent, title, side, variable):
+    def _file_row(self, parent, side, variable):
         row = tk.Frame(parent, bg="#ffffff")
-        tk.Label(row, text=title, bg="#ffffff", fg="#1e3a5f", font=self.ui_bold,
-                 width=8, anchor="w").pack(side="left")
+        title_key = "gui.compare.file_a" if side == "a" else "gui.compare.file_b"
+        title = tk.Label(row, text=t(title_key), bg="#ffffff", fg="#1e3a5f", font=self.ui_bold,
+                         width=12, anchor="w")
+        title.pack(side="left")
         tk.Label(row, textvariable=variable, bg="#f4f8fb", fg="#1c2833", font=self.ui,
                  anchor="w", padx=8, pady=4).pack(side="left", fill="x", expand=True, padx=(0, 8))
-        ttk.Button(row, text="Browse...", command=lambda: self.browse(side)).pack(side="left")
-        ttk.Button(row, text="Last conversion", command=lambda: self.use_last_conversion(side)).pack(
-            side="left", padx=(6, 0))
+        browse = ttk.Button(row, text=t("gui.button.browse"), command=lambda: self.browse(side))
+        browse.pack(side="left")
+        last = ttk.Button(row, text=t("gui.compare.last_button"), command=lambda: self.use_last_conversion(side))
+        last.pack(side="left", padx=(6, 0))
+        if side == "a":
+            self.file_a_label = title
+            self.browse_a = browse
+            self.last_a = last
+        else:
+            self.file_b_label = title
+            self.browse_b = browse
+            self.last_b = last
         return row
 
     def _build_hex(self, parent) -> None:
@@ -332,10 +397,12 @@ class CompareWindow:
         parent.columnconfigure(1, minsize=8)
         parent.columnconfigure(2, weight=1)
         parent.rowconfigure(2, weight=1)
-        tk.Label(parent, text="File A", bg="#ffffff", fg="#1e3a5f", font=self.ui_bold,
-                 anchor="w").grid(row=0, column=0, sticky="ew", padx=(8, 0), pady=(6, 0))
-        tk.Label(parent, text="File B", bg="#ffffff", fg="#1e3a5f", font=self.ui_bold,
-                 anchor="w").grid(row=0, column=2, sticky="ew", padx=(8, 0), pady=(6, 0))
+        self.pane_a_label = tk.Label(parent, text=t("gui.compare.file_a"), bg="#ffffff", fg="#1e3a5f",
+                                     font=self.ui_bold, anchor="w")
+        self.pane_b_label = tk.Label(parent, text=t("gui.compare.file_b"), bg="#ffffff", fg="#1e3a5f",
+                                     font=self.ui_bold, anchor="w")
+        self.pane_a_label.grid(row=0, column=0, sticky="ew", padx=(8, 0), pady=(6, 0))
+        self.pane_b_label.grid(row=0, column=2, sticky="ew", padx=(8, 0), pady=(6, 0))
         self.head_a = self._hex_widget(parent, header=True)
         self.head_b = self._hex_widget(parent, header=True)
         self.hex_a = self._hex_widget(parent, header=False)
@@ -359,12 +426,15 @@ class CompareWindow:
         self.hex_a.bind("<Configure>", self._on_hex_configure)
         for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
             parent.bind(sequence, self._on_hex_wheel)
-        self._fill_widget(self.hex_a, "Choose two files to compare.")
-        self._fill_widget(self.hex_b, "Choose two files to compare.")
+        self._fill_widget(self.hex_a, t("gui.compare.choose_hex"))
+        self._fill_widget(self.hex_b, t("gui.compare.choose_hex"))
 
     def _build_ranges(self, parent) -> None:
-        tk.Label(parent, text="Differences (click a row to jump)", bg="#ffffff", fg="#1e3a5f",
-                 font=self.ui_bold, anchor="w").pack(fill="x", padx=8, pady=(6, 2))
+        self.range_heading = tk.Label(
+            parent, text=t("gui.compare.range_heading"), bg="#ffffff", fg="#1e3a5f",
+            font=self.ui_bold, anchor="w",
+        )
+        self.range_heading.pack(fill="x", padx=8, pady=(6, 2))
         frame = tk.Frame(parent, bg="#ffffff")
         frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         self.range_view = tk.Text(
@@ -386,7 +456,7 @@ class CompareWindow:
         self.range_view.bind("<Button-4>", self._on_range_wheel)
         self.range_view.bind("<Button-5>", self._on_range_wheel)
         self.range_view.bind("<Configure>", self._on_range_configure)
-        self._fill_widget(self.range_view, "Differences show up here.")
+        self._fill_widget(self.range_view, t("gui.compare.range_placeholder"))
 
     def _hex_widget(self, parent, header: bool):
         widget = tk.Text(
@@ -410,30 +480,61 @@ class CompareWindow:
         for widget in (self.head_a, self.head_b):
             self._fill_widget(widget, header)
 
+    def _note(self, key: str, **kwargs) -> None:
+        self._status_key = key
+        self._status_kwargs = kwargs
+        self.status.set(t(key, **kwargs))
+
+    def _display_name(self, side: str) -> str:
+        origin = self.origin_a if side == "a" else self.origin_b
+        source = self.source_a if side == "a" else self.source_b
+        if origin == "last":
+            if source:
+                return t("gui.compare.last_named", name=source)
+            return t("gui.compare.last_plain")
+        return source
+
+    def _apply_side_label(self, side: str) -> None:
+        data = self.data_a if side == "a" else self.data_b
+        variable = self.label_a if side == "a" else self.label_b
+        if data is None:
+            variable.set(t("gui.compare.no_file"))
+            if side == "a":
+                self.name_a = ""
+            else:
+                self.name_b = ""
+            return
+        name = self._display_name(side)
+        if side == "a":
+            self.name_a = name
+        else:
+            self.name_b = name
+        variable.set(t("gui.compare.file_bytes", name=shorten_middle(name, 48), n=len(data)))
+
     def _prefill_last_conversion(self) -> None:
         if self.use_last_conversion("b", quiet=True):
-            self.status.set("File B is the last conversion. Choose file A to compare.")
+            self._note("gui.compare.prefill")
 
-    def _set_side(self, side: str, data: bytes, label: str, path: Path | None) -> None:
-        shown = "%s    %d bytes" % (shorten_middle(label, 48), len(data))
+    def _set_side(self, side: str, data: bytes, source_name: str, path: Path | None, origin: str = "file") -> None:
         if side == "a":
             self.data_a = data
-            self.name_a = label
             self.path_a = path
-            self.label_a.set(shown)
+            self.origin_a = origin
+            self.source_a = source_name
         else:
             self.data_b = data
-            self.name_b = label
             self.path_b = path
-            self.label_b.set(shown)
-        self.status.set("Loaded %s (%d bytes)." % (label, len(data)))
+            self.origin_b = origin
+            self.source_b = source_name
+        self._apply_side_label(side)
+        self._note("gui.compare.loaded", name=self._display_name(side), n=len(data))
         if self.data_a is not None and self.data_b is not None:
             self._compare_now()
 
     def _compare_now(self) -> None:
         if self.data_a is None or self.data_b is None:
             return
-        self.summary.configure(text="Comparing...", fg="#1c2833")
+        self.summary.configure(text=t("gui.compare.comparing"), fg="#1c2833")
         try:
             self.top.configure(cursor="watch")
             self.top.update_idletasks()
@@ -460,10 +561,16 @@ class CompareWindow:
         if self.selected is not None:
             self._reveal_range(self.selected)
             self._scroll_to_selected()
-            self.status.set("Range 1 of %d, at offset %08X." % (len(result.ranges), result.ranges[0].offset))
+            item = result.ranges[0]
+            self._note(
+                "gui.compare.range_status",
+                n=1,
+                total=len(result.ranges),
+                offset="%08X" % item.offset,
+            )
         else:
             self.set_top(0)
-            self.status.set("Files are identical.")
+            self._note("gui.compare.identical_status")
         self._render_ranges()
 
     def _toggle_only(self) -> None:
@@ -518,15 +625,15 @@ class CompareWindow:
             except tk.TclError:
                 fraction = 0.0
             if self.result is None or self.data_a is None or self.data_b is None:
-                self._fill_widget(self.hex_a, "Choose two files to compare.")
-                self._fill_widget(self.hex_b, "Choose two files to compare.")
+                self._fill_widget(self.hex_a, t("gui.compare.choose_hex"))
+                self._fill_widget(self.hex_b, t("gui.compare.choose_hex"))
             elif self.span == 0:
-                self._fill_widget(self.hex_a, "Both files are empty.")
-                self._fill_widget(self.hex_b, "Both files are empty.")
+                self._fill_widget(self.hex_a, t("gui.compare.empty"))
+                self._fill_widget(self.hex_b, t("gui.compare.empty"))
             else:
                 rows = self._visible_row_numbers()
                 if not rows:
-                    message = "No differing rows." if self.only.get() else "Nothing to show."
+                    message = t("gui.compare.no_diff_rows") if self.only.get() else t("gui.compare.nothing")
                     self._fill_widget(self.hex_a, message)
                     self._fill_widget(self.hex_b, message)
                 else:
@@ -641,11 +748,11 @@ class CompareWindow:
 
     def _render_ranges(self) -> None:
         if self.result is None:
-            self._fill_widget(self.range_view, "Differences show up here.")
+            self._fill_widget(self.range_view, t("gui.compare.range_placeholder"))
             self.range_scroll.set(0, 1)
             return
         if not self.result.ranges:
-            self._fill_widget(self.range_view, "No differences.")
+            self._fill_widget(self.range_view, t("gui.compare.no_differences_view"))
             self.range_scroll.set(0, 1)
             return
         total = len(self.result.ranges)
@@ -729,19 +836,23 @@ class CompareWindow:
 
     def _export(self, kind: str) -> None:
         if self.result is None:
-            messagebox.showinfo("Nothing to export", "Compare two files first.", parent=self.top)
+            messagebox.showinfo(
+                t("gui.compare.nothing_title"),
+                t("gui.compare.nothing_body"),
+                parent=self.top,
+            )
             return
         if kind == "csv":
             extension = ".csv"
-            types = [("CSV", "*.csv")]
-            initial = "compare.csv"
+            types = [(t("gui.compare.filetype_csv"), "*.csv")]
+            initial = t("gui.compare.initial_csv")
         else:
             extension = ".txt"
-            types = [("Text report", "*.txt")]
-            initial = "compare.txt"
+            types = [(t("gui.compare.filetype_text"), "*.txt")]
+            initial = t("gui.compare.initial_text")
         selected = filedialog.asksaveasfilename(
             parent=self.top,
-            title="Export diff report",
+            title=t("gui.compare.export_title"),
             initialfile=initial,
             defaultextension=extension,
             filetypes=types,
@@ -754,7 +865,7 @@ class CompareWindow:
         try:
             self.export_to(path, kind)
         except OSError as exc:
-            messagebox.showerror("Cannot save", str(exc), parent=self.top)
+            messagebox.showerror(t("gui.dialog.cannot_save"), str(exc), parent=self.top)
 
     def _report_name(self, side: str) -> str:
         path = self.path_a if side == "a" else self.path_b

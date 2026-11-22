@@ -7,6 +7,7 @@
 import csv
 import hashlib
 import io
+import os
 import subprocess
 import sys
 import time
@@ -28,6 +29,7 @@ from dflash_eee.compare import (
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "dflash_to_eee.py"
+GOOD = ROOT / "ci" / "input" / "dflash" / "4208ada9b94692937991b4d801b67b54c03ba4da.bin"
 EMPTY_SHA = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 
@@ -373,3 +375,82 @@ def test_cli_identical_diff_report_and_errors(tmp_path):
     version = _run(["--version"])
     assert version.returncode == 0
     assert b"dflash-to-eeprom" in version.stdout
+
+
+def test_spanish_summary_keeps_sha256_offset_and_hex(tmp_path):
+    from dflash_eee.i18n import set_language
+
+    set_language("es")
+    result = compare_bytes(b"\x00\x01", b"\x00\x02")
+    line = result.summary_line()
+    assert line.startswith("No son idénticos.")
+    assert "1 byte distinto en 1 rango" in line
+    assert "SHA-256" in result.summary_text()
+    text = format_report(result, "a.bin", "b.bin", "text")
+    assert text.startswith("Comparación binaria\n")
+    assert "Archivo A: a.bin" in text
+    assert "Offset    Longitud" in text
+    assert "No hay diferencias." not in text
+    same = compare_bytes(b"\x11", b"\x11")
+    assert same.summary_line().startswith("Idénticos.")
+    assert "No hay diferencias." in format_report(same, "a", "b", "text")
+    longer = compare_bytes(b"\x00\x01\x02\x03", b"\x00\x09")
+    assert "Los tamaños no coinciden" in longer.summary_line()
+    assert "de más en A" in longer.summary_line()
+    cli = format_cli_report(result, "a.bin", "b.bin")
+    assert "No son idénticos." in cli
+    assert "SHA-256" in cli
+    preview = format_cli_report(
+        compare_bytes(b"\x10" * 4 + b"\x11" * 20, b"\x10" * 4 + b"\x22" * 20),
+        "a.bin",
+        "b.bin",
+        preview=16,
+    )
+    assert "(+4 más)" in preview
+    assert "00000004" in preview
+    set_language("en")
+
+    left = tmp_path / "a.bin"
+    right = tmp_path / "b.bin"
+    left.write_bytes(b"\x00")
+    right.write_bytes(b"\x01\x02")
+    env = os.environ.copy()
+    env["LANG"] = "C"
+    env["LC_ALL"] = "C"
+    env["PYTHONIOENCODING"] = "utf-8"
+    run = subprocess.run(
+        [sys.executable, str(SCRIPT), "--lang", "es", "compare", str(left), str(right)],
+        cwd=str(ROOT),
+        capture_output=True,
+        env=env,
+    )
+    assert run.returncode == 1
+    stdout = run.stdout.decode("latin-1")
+    assert "No son idénticos." in stdout
+    assert "SHA-256" in stdout
+    assert "Los tamaños no coinciden" in stdout
+    assert "de más en B" in stdout
+    after = subprocess.run(
+        [sys.executable, str(SCRIPT), "compare", "--lang", "es", str(left), str(right)],
+        cwd=str(ROOT),
+        capture_output=True,
+        env=env,
+    )
+    assert after.returncode == 1
+    assert "No son idénticos." in after.stdout.decode("latin-1")
+    assert b"SHA-256" in after.stdout
+
+
+def test_two_argument_compare_is_still_a_filename(tmp_path):
+    source = tmp_path / "compare"
+    source.write_bytes(GOOD.read_bytes())
+    out = tmp_path / "out.bin"
+    run = subprocess.run(
+        [sys.executable, str(SCRIPT), "compare", "out.bin"],
+        cwd=str(tmp_path),
+        capture_output=True,
+    )
+    assert run.returncode == 0
+    assert out.stat().st_size == 4096
+    assert "No son idénticos".encode("utf-8") not in run.stdout
+    assert b"Not identical" not in run.stdout

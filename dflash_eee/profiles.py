@@ -26,6 +26,8 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from dflash_eee.i18n import t
+
 
 # S12XE hardware EEE, from Freescale AN3490 and the record encoding used by
 # the original FRM3 decoder (header word 0xFACF, 63 records of address+data).
@@ -44,6 +46,15 @@ CMD_EMPTY = 0xF800
 
 DFLASH_BYTES = 32 * 1024
 DFLASH_SECTORS = DFLASH_BYTES // SECTOR_SIZE  # 128
+
+# AN3490 Figure 2: the buffer RAM is 16 regions of 128 words (4 KB) at
+# global 0x13_F000-0x13_FFFF. AN3743 Figure 6 numbers those regions from
+# the top: ERPART 1 occupies 0x13_FC00-0x13_FFFF, and a larger ERPART
+# grows downward. The record address label (AN3490 section 4.2) is the
+# word index in that 4 KB buffer, not an offset from the enabled slice.
+EEE_BUFFER_PAGES = 16
+EEE_BUFFER_BYTES = EEE_BUFFER_PAGES * SECTOR_SIZE  # 4096
+WORDS_PER_PAGE = SECTOR_SIZE // 2  # 128
 
 _ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
@@ -149,23 +160,73 @@ class ModuleProfile:
         return self.eee_size // 2
 
     @property
+    def eee_word_base(self) -> int:
+        """Word address of byte 0 of this profile's image, in the 4 KB buffer."""
+
+        if self.layout.name != S12XE_LAYOUT.name:
+            return 0
+        pages = self.erpart_pages
+        if pages is None or pages * SECTOR_SIZE != self.eee_size:
+            if self.eee_size % SECTOR_SIZE or not (SECTOR_SIZE <= self.eee_size <= EEE_BUFFER_BYTES):
+                return 0
+            pages = self.eee_size // SECTOR_SIZE
+        if not 1 <= pages <= EEE_BUFFER_PAGES:
+            return 0
+        return eee_word_base(pages)
+
+    @property
     def status_label(self) -> str:
-        return {
+        defaults = {
             "supported": "Supported",
             "experimental": "Experimental",
             "unsupported": "Not supported",
-        }[self.status]
+        }
+        return t("status." + self.status, default=defaults[self.status])
 
     def partition_text(self) -> str:
         if self.dfpart_sectors is None or self.erpart_pages is None:
-            return "Partition: not stated by the sources used here."
+            return t(
+                "profile.partition.none",
+                default="Partition: not stated by the sources used here.",
+            )
         user = self.dfpart_sectors * SECTOR_SIZE
         eee = self.erpart_pages * SECTOR_SIZE
-        prefix = "Partition" if self.partition_confirmed else "Partition (not confirmed)"
-        return (
-            "%s: user D-Flash %d sectors (%d bytes), EEE %d pages (%d bytes)."
-            % (prefix, self.dfpart_sectors, user, self.erpart_pages, eee)
+        key = "profile.partition.confirmed" if self.partition_confirmed else "profile.partition.unconfirmed"
+        fallback = (
+            "Partition: user D-Flash %(sectors)d sectors (%(user)d bytes), EEE %(pages)d pages (%(eee)d bytes)."
+            if self.partition_confirmed else
+            "Partition (not confirmed): user D-Flash %(sectors)d sectors (%(user)d bytes), EEE %(pages)d pages (%(eee)d bytes)."
         )
+        return t(key, default=fallback, sectors=self.dfpart_sectors, user=user, pages=self.erpart_pages, eee=eee)
+
+
+def eee_word_base(pages: int) -> int:
+    """First word index of an ERPART slice inside the 4 KB EEE buffer.
+
+    Page 16 (4 KB) starts at word 0. Page 8 (2 KB) starts at word 1024,
+    which is byte 0x800, global address 0x13_F800. Page 1 starts at word
+    1920, global address 0x13_FC00, matching AN3743 Figure 6.
+    """
+
+    if pages < 1 or pages > EEE_BUFFER_PAGES:
+        raise ProfileError(t(
+            "profile.err.erpart_range",
+            pages=EEE_BUFFER_PAGES,
+            default="ERPART must be from 1 to %(pages)d",
+        ))
+    return (EEE_BUFFER_PAGES - pages) * WORDS_PER_PAGE
+
+
+def smallest_erpart(min_word: int, max_word: int) -> int | None:
+    """Smallest top-aligned ERPART whose window contains both word addresses."""
+
+    if min_word < 0 or max_word >= EEE_BUFFER_PAGES * WORDS_PER_PAGE or min_word > max_word:
+        return None
+    for pages in range(1, EEE_BUFFER_PAGES + 1):
+        base = eee_word_base(pages)
+        if min_word >= base and max_word < base + pages * WORDS_PER_PAGE:
+            return pages
+    return None
 
 
 def partition_is_valid(dfpart: int, erpart: int, total_sectors: int = DFLASH_SECTORS) -> bool:
@@ -194,48 +255,73 @@ def _require(condition: bool, message: str) -> None:
 
 
 def _check_profile(profile: ModuleProfile) -> None:
-    _require(profile.status in ("supported", "experimental", "unsupported"), profile.id + " status")
-    _require(bool(_ID_RE.match(profile.id)), "Profile id %r is not a lowercase identifier" % profile.id)
-    _require(profile.unknown_sector in ("error", "warn"), profile.id + " unknown_sector")
-    _require(len(profile.sources) > 0, profile.id + " needs at least one source")
+    _require(
+        profile.status in ("supported", "experimental", "unsupported"),
+        t("profile.err.status_value", id=profile.id),
+    )
+    _require(bool(_ID_RE.match(profile.id)), t("profile.err.bad_id", id=profile.id))
+    _require(profile.unknown_sector in ("error", "warn"), t("profile.err.unknown_sector", id=profile.id))
+    _require(len(profile.sources) > 0, t("profile.err.needs_source", id=profile.id))
     _require(profile.layout.records_per_sector == RECORDS_PER_SECTOR or profile.layout is not S12XE_LAYOUT,
              profile.id)
     if profile.layout.sector_size <= profile.layout.header_size:
-        raise ProfileError(profile.id + " layout header is larger than the sector")
+        raise ProfileError(t("profile.err.header_size", id=profile.id))
     if (profile.layout.sector_size - profile.layout.header_size) % profile.layout.record_size:
-        raise ProfileError(profile.id + " records do not fill a sector")
+        raise ProfileError(t("profile.err.record_fill", id=profile.id))
 
     if profile.status == "supported":
-        _require(profile.conversion_enabled, profile.id + " is supported but does not convert")
-        _require(not profile.assumptions.strip(), profile.id + " is supported but still lists assumptions")
-        _require(not profile.external, profile.id + " cannot be both external and supported")
-        _require(profile.partition_confirmed, profile.id + " partition is not confirmed")
+        _require(profile.conversion_enabled, t("profile.err.supported_noconvert", id=profile.id))
+        _require(not profile.assumptions.strip(), t("profile.err.supported_assumptions", id=profile.id))
+        _require(not profile.external, t("profile.err.external_supported", id=profile.id))
+        _require(profile.partition_confirmed, t("profile.err.partition_unconfirmed", id=profile.id))
     if profile.status == "experimental":
-        _require(profile.assumptions.strip() != "", profile.id + " is experimental but has no assumption text")
+        _require(profile.assumptions.strip() != "", t("profile.err.experimental_empty", id=profile.id))
     if profile.status == "unsupported":
-        _require(not profile.conversion_enabled, profile.id + " is unsupported but still converts")
+        _require(not profile.conversion_enabled, t("profile.err.unsupported_converts", id=profile.id))
 
     if profile.dfpart_sectors is not None and profile.erpart_pages is not None:
         _require(
             partition_is_valid(profile.dfpart_sectors, profile.erpart_pages),
-            "%s partition DFPART=%s ERPART=%s violates the AN3490 size rule"
-            % (profile.id, profile.dfpart_sectors, profile.erpart_pages),
+            t(
+                "profile.err.partition_rule",
+                id=profile.id,
+                dfpart=profile.dfpart_sectors,
+                erpart=profile.erpart_pages,
+            ),
         )
         if profile.conversion_enabled and profile.partition_confirmed:
             _require(
                 profile.eee_size == profile.erpart_pages * SECTOR_SIZE,
-                profile.id + " EEE size does not match ERPART x 256",
+                t("profile.err.eee_mismatch", id=profile.id),
             )
 
     if not profile.conversion_enabled:
         return
 
     _require(profile.dflash_size > 0, profile.id)
-    _require(profile.eee_size > 0 and profile.eee_size % 2 == 0, profile.id + " EEE size")
+    _require(profile.eee_size > 0 and profile.eee_size % 2 == 0, t("profile.err.eee_size", id=profile.id))
     _require(profile.scan_sectors > 0, profile.id)
     window = profile.scan_offset + profile.scan_sectors * profile.layout.sector_size
-    _require(window <= profile.dflash_size, profile.id + " scan window is larger than the D-Flash")
+    _require(window <= profile.dflash_size, t("profile.err.scan_window", id=profile.id))
     _require(profile.ee_words > 0, profile.id)
+
+
+def profile_text(profile: ModuleProfile, attr: str) -> str:
+    """Localized profile prose. Drop-in files keep the wording the shop wrote."""
+
+    value = getattr(profile, attr)
+    if not isinstance(value, str) or profile.external or value == "":
+        return value
+    return t("profile.%s.%s" % (profile.id, attr), default=value)
+
+
+def localized_sources(profile: ModuleProfile) -> tuple[str, ...]:
+    if profile.external:
+        return profile.sources
+    return tuple(
+        t("profile.%s.source.%d" % (profile.id, index), default=source)
+        for index, source in enumerate(profile.sources)
+    )
 
 
 # Field offsets below are the original FRM3 decoder (van Leeuwen, 2017).
@@ -359,26 +445,26 @@ BUILTIN: tuple[ModuleProfile, ...] = (
         unknown_sector="error",
         summary=(
             "The XF BCM gives the entire 32 KB D-Flash to the EEE journal and "
-            "emulates 2 KB (8 sectors), not the 4 KB used by the BMW FRM3. "
-            "The journal encoding is the same S12XE hardware format. The image "
-            "written back is 2 KB. Records addressed above that window are reported "
-            "as errors instead of being stored in a spare 2 KB."
+            "emulates 2 KB (ERPART 8). The record's low 11 bits are the word "
+            "address in the 4 KB buffer RAM at 0x13_F000-0x13_FFFF. A smaller "
+            "ERPART occupies the top of that buffer, so this image is words "
+            "1024-2047 (bytes 0x800-0xFFF of a 4 KB replay), not words 0-1023."
         ),
         write_notes=(
-            "Partition to EEE = 8 sectors (2048 bytes) and user D-Flash = 0, then "
+            "Partition to EEE = 8 x 256 (2048 bytes) and user D-Flash = 0, then "
             "write this 2 KB file to EEPROM, not to D-Flash. Verify the read-back. "
-            "Key programming and configuration can still require JLR SDD. "
-            "The original 4 KB FRM tool's upper half is the erased spare of a 4 KB "
-            "image; this profile does not emit that spare."
+            "The file is the top 2 KB of the 4 KB buffer (global 0x13_F800-0x13_FFFF). "
+            "Key programming and configuration can still require JLR SDD."
         ),
         assumptions="",
         sources=(
-            "Jaguar Forum, BCM repair: XF emulated EEPROM is restored with this project's D-Flash replay; the XF uses 2 KB, so the blank upper half of the old 4 KB output was discarded, and the partition used was 2048 bytes EEPROM and 0 D-Flash. https://www.jaginfo.org/threads/bcm-repair.117049/page-7",
+            "Jaguar Forum, BCM repair: XF emulated EEPROM is restored with this project's D-Flash replay, and the partition used was 2048 bytes EEPROM and 0 D-Flash. https://www.jaginfo.org/threads/bcm-repair.117049/page-7",
             "Jaguar Forum, XF key-not-found: original allocation described as 2048 bytes EEPROM and 0 bytes D-Flash, with the whole 32 KB D-Flash backing that EEPROM. https://www.jaginfo.org/threads/problem-with-jaguar-xf-key-not-found.117470/page-4",
             "Jaguar Forum, BCMB dump rewrite: XF rear BCMB CX23-14D628 on MC9S12XET256; facelift DX23 partition described as 2 KB EEE and 0 D-Flash. https://www.jaginfo.org/threads/bcmb-dump-rewrite.118137/",
             "MHH AUTO, 2013 Jaguar XF BCM: MC9S12XET256, repair partition emulated EEPROM 8 x 256 and D-Flash 0. https://mhhauto.com/Thread-2013-JAGUAR-XF-BCM-FAULTY-DUE-TO-BATTERY-DISCONNECTION",
             "Xhorse VVDI, Tips and Info about MC9S12XE Chip: D-Flash on the MC9S12XE series is 32 KB. https://www.xhorsevvdi.com/service/tips-and-info-about-mc9s12xe-chip.html",
-            "Freescale AN3490: family record system (256-byte sector, 63 records, DFPART/ERPART). ERPART 8 and DFPART 0 meets the size rule and is 2 KB of EEE RAM. https://www.nxp.com/docs/en/application-note/AN3490.pdf",
+            "Freescale AN3490 Figure 2 and section 4.2: buffer RAM is 4 KB at 0x13_F000-0x13_FFFF, and each record's address label is the EEE RAM word address in that buffer. ERPART 8 and DFPART 0 meets the size rule and is 2 KB of EEE RAM. https://www.nxp.com/docs/en/application-note/AN3490.pdf",
+            "Freescale AN3743 Figure 6: ERPART regions are taken from the top of the buffer. ERPART 1 is the 256 bytes at 0x13_FC00-0x13_FFFF, so ERPART 8 is 0x13_F800-0x13_FFFF. https://www.nxp.com/docs/en/application-note/AN3743.pdf",
         ),
         fields=(),
     ),
@@ -406,7 +492,8 @@ BUILTIN: tuple[ModuleProfile, ...] = (
             "Published partition is 4 KB user D-Flash plus 2 KB EEE. "
             "A healthy locked module does not yield a plain EEE image; the chip "
             "has to be unlocked first. This profile replays a raw 32 KB read "
-            "into a 2 KB image."
+            "into a 2 KB image, using the top of the 4 KB buffer (words 1024-2047), "
+            "the same window as the XF BCM."
         ),
         write_notes=(
             "Unlock before reading (Xhorse notes the security byte FC). "
@@ -471,7 +558,7 @@ BUILTIN: tuple[ModuleProfile, ...] = (
 def _validate_builtins() -> None:
     seen = set()
     for profile in BUILTIN:
-        _require(profile.id not in seen, "duplicate profile " + profile.id)
+        _require(profile.id not in seen, t("profile.err.duplicate_builtin", id=profile.id))
         seen.add(profile.id)
         _check_profile(profile)
 
@@ -485,7 +572,7 @@ def get_profile(profile_id: str, profiles: list[ModuleProfile] | None = None) ->
         if profile.id == profile_id:
             return profile
     known = ", ".join(profile.id for profile in choices)
-    raise ProfileError("Unknown profile %r. Known profiles: %s" % (profile_id, known))
+    raise ProfileError(t("profile.err.unknown", id=profile_id, known=known))
 
 
 def default_extra_dirs() -> list[Path]:
@@ -504,7 +591,7 @@ def default_extra_dirs() -> list[Path]:
 
 def _as_int(value, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
-        raise ProfileError(label + " must be an integer")
+        raise ProfileError(t("profile.err.not_integer", label=label))
     return value
 
 
@@ -512,13 +599,13 @@ def _field_from_json(raw: dict) -> Field:
     kind = raw.get("kind")
     label = raw.get("label")
     if not isinstance(label, str) or not label:
-        raise ProfileError("Field is missing a label")
+        raise ProfileError(t("profile.err.field_label"))
     if kind == "ascii":
         return AsciiField(label, _as_int(raw.get("offset"), "offset"), _as_int(raw.get("length"), "length"))
     if kind == "date":
         year = raw.get("year")
         if not isinstance(year, list) or not year:
-            raise ProfileError("Date field year must be a list of offsets")
+            raise ProfileError(t("profile.err.date_year"))
         return DateField(
             label,
             day=_as_int(raw.get("day"), "day"),
@@ -528,14 +615,14 @@ def _field_from_json(raw: dict) -> Field:
     if kind == "part":
         fmt = raw.get("log_format")
         if not isinstance(fmt, str) or fmt.count("%") != 1:
-            raise ProfileError("Part field log_format must contain one %% conversion")
+            raise ProfileError(t("profile.err.part_format"))
         return PartField(
             label,
             _as_int(raw.get("offset"), "offset"),
             _as_int(raw.get("length"), "length"),
             fmt,
         )
-    raise ProfileError("Unknown field kind %r" % kind)
+    raise ProfileError(t("profile.err.field_kind", kind=kind))
 
 
 def profile_from_json(path: Path) -> ModuleProfile:
@@ -544,9 +631,9 @@ def profile_from_json(path: Path) -> ModuleProfile:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ProfileError("%s is not valid JSON (%s)" % (path.name, exc)) from exc
+        raise ProfileError(t("profile.err.bad_json", name=path.name, error=exc)) from exc
     if not isinstance(raw, dict):
-        raise ProfileError(path.name + " must contain a JSON object")
+        raise ProfileError(t("profile.err.not_object", name=path.name))
 
     required = (
         "id", "title", "manufacturer", "status", "mcu", "vehicles",
@@ -554,27 +641,24 @@ def profile_from_json(path: Path) -> ModuleProfile:
     )
     missing = [key for key in required if key not in raw]
     if missing:
-        raise ProfileError("%s is missing %s" % (path.name, ", ".join(missing)))
+        raise ProfileError(t("profile.err.missing", name=path.name, keys=", ".join(missing)))
 
     sources = raw["sources"]
     if not isinstance(sources, list) or not all(isinstance(item, str) and item.strip() for item in sources):
-        raise ProfileError(path.name + " sources must be a non-empty list of strings")
+        raise ProfileError(t("profile.err.sources", name=path.name))
 
     status = raw["status"]
     assumptions = raw.get("assumptions") or ""
     if not isinstance(assumptions, str):
-        raise ProfileError(path.name + " assumptions must be a string")
-    external_note = (
-        "Loaded from %s. Drop-in files are experimental even if the file says supported."
-        % path.name
-    )
+        raise ProfileError(t("profile.err.assumptions_type", name=path.name))
+    external_note = t("profile.err.external_note", name=path.name)
     if status == "supported":
         status = "experimental"
         assumptions = (assumptions + " " + external_note).strip()
     elif status == "experimental":
         assumptions = (assumptions + " " + external_note).strip()
     elif status != "unsupported":
-        raise ProfileError(path.name + " status must be supported, experimental or unsupported")
+        raise ProfileError(t("profile.err.status", name=path.name))
 
     conversion_enabled = raw.get("conversion_enabled", status != "unsupported")
     if status == "unsupported":
@@ -582,7 +666,7 @@ def profile_from_json(path: Path) -> ModuleProfile:
 
     fields_raw = raw.get("fields") or []
     if not isinstance(fields_raw, list):
-        raise ProfileError(path.name + " fields must be a list")
+        raise ProfileError(t("profile.err.fields", name=path.name))
 
     dfpart = raw.get("dfpart_sectors")
     erpart = raw.get("erpart_pages")
@@ -628,7 +712,7 @@ def discover_profiles(extra_dirs: list[Path] | None = None) -> tuple[list[Module
     for directory in extra_dirs or []:
         directory = Path(directory)
         if not directory.is_dir():
-            errors.append("%s is not a directory" % directory)
+            errors.append(t("profile.err.not_dir", path=directory))
             continue
         for path in sorted(directory.glob("*.json")):
             try:
@@ -637,7 +721,7 @@ def discover_profiles(extra_dirs: list[Path] | None = None) -> tuple[list[Module
                 errors.append(str(exc))
                 continue
             if profile.id in seen:
-                errors.append("%s repeats profile id %s" % (path.name, profile.id))
+                errors.append(t("profile.err.duplicate", name=path.name, id=profile.id))
                 continue
             profiles.append(profile)
             seen.add(profile.id)

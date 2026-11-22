@@ -28,3 +28,6 @@ py-modules = ["gui", "dflash_to_eee"]
 
 [tool.setuptools.packages.find]
 include = ["dflash_eee*"]
+
+[tool.setuptools.package-data]
+dflash_eee = ["locales/*.json"]

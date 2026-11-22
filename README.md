@@ -1,5 +1,11 @@
 # D-Flash to EEPROM
 
+## This software is free
+
+dflash_to_eee is free, open-source software under the BSD-3-Clause license. The license allows other people to redistribute the program, including for a fee. The official version is free. If someone charged you for it, you paid for something you could get free from the official page: https://github.com/BHGKing/dflash_to_eeprom/releases
+
+[Español](README_es.md)
+
 Rebuild the emulated EEPROM (EEE) of a Freescale/NXP S12XE microcontroller from a raw D-Flash dump. The original tool, by Ben van Leeuwen Autotechniek, repaired BMW FRM3 modules whose MC9S12XEQ384 had lost its EEPROM partition. This version keeps that decoder, turns it into a library the command line, desktop window and web upload all share, and adds module profiles for the other S12XE layouts that public repair notes actually describe.
 
 BSD-3-Clause. Copyright 2017-2018 Ben van Leeuwen Autotechniek. Copyright 2026 Jose.
@@ -32,7 +38,7 @@ Supported means each of these was checked, not guessed.
 
 **BMW / Mini FRM3.** AN3490 describes the family EEE (32 KB D-Flash on the S12XEP100, 256-byte sectors, 63 records, the DFPART/ERPART rule). The UPA-S footwell manual for the MC9S12XEQ384 shows D-Flash 32 KB, EEE up to 4 KB, and the partition EEE 16 pages / D-Flash user 0. Xhorse's MC9S12XE note uses the E-chassis FRM as the "whole D-Flash given to EEE, which yields 4 KB" example, and says a lost partition must be read as 32 KB and converted. The VVDI Prog FRM walk-through reads EEE 0 / D-Flash 128 sectors and writes EEE 16 / D-Flash 0. The `ci/` sample pairs are the original decoder's regression set: 32 KB in, 4 KB out, including the VIN and part-number strings. Mini FRM3 uses the same MCU and the same procedure.
 
-**Jaguar XF BCM / BCMB.** Repair notes on Jaguar Forum identify the failed memory as the emulated EEPROM, point at this project's decoder, and say the XF uses 2 KB rather than the BMW 4 KB, with the partition 2048 bytes EEPROM and 0 D-Flash. A 2013 XF thread names the MC9S12XET256 and the write-back partition 8 x 256 EEPROM, D-Flash 0. The rear BCMB thread names MC9S12XET256 on CX23-14D628 and the same 2 KB / 0 D-Flash split for the later DX23 units. XET256 and XEQ384 are both MC9S12XE parts; Xhorse states that the series D-Flash is 32 KB. ERPART 8 and DFPART 0 is a legal AN3490 partition and is 2 KB of EEE. VIN offsets from the FRM3 are not applied here. They were only checked on the FRM samples.
+**Jaguar XF BCM / BCMB.** Repair notes on Jaguar Forum identify the failed memory as the emulated EEPROM, point at this project's decoder, and say the XF uses 2 KB rather than the BMW 4 KB, with the partition 2048 bytes EEPROM and 0 D-Flash. A 2013 XF thread names the MC9S12XET256 and the write-back partition 8 x 256 EEPROM, D-Flash 0. The rear BCMB thread names MC9S12XET256 on CX23-14D628 and the same 2 KB / 0 D-Flash split for the later DX23 units. XET256 and XEQ384 are both MC9S12XE parts; Xhorse states that the series D-Flash is 32 KB. ERPART 8 and DFPART 0 is a legal AN3490 partition and is 2 KB of EEE. That 2 KB is the top of the 4 KB buffer RAM at 0x13_F000-0x13_FFFF: AN3490 section 4.2 stores the buffer word address in each record, and AN3743 Figure 6 puts ERPART at the top of the buffer, so ERPART 8 is bytes 0x800-0xFFF of a 4 KB replay (global 0x13_F800-0x13_FFFF). A journal whose addresses are only in that top half is this 2 KB image. Addresses that also use the bottom half need the 4 KB profile, and the window then says so instead of writing an empty file. VIN offsets from the FRM3 are not applied here. They were only checked on the FRM samples.
 
 **Experimental and refused.** VVDI lists a separate F-series FRM script as MC9S12XET512 and, in the same note, also associates mask 2M25J with 9S12XEQ384. No source used here gives that script its own sizes, so the profile is experimental and does not decode FRM3 fields. Xhorse and the CG100 KVM procedure both say Land Rover / Jaguar KVM is 4 KB D-Flash plus 2 KB EEPROM, and that the chip (security byte FC) has to be unlocked first. They do not say which end of a raw 32 KB file holds the 16 user sectors, so the KVM profile scans all 128 sectors, treats non-EEE sectors as warnings, and stays experimental. CAS4 version 1 is an MC9S12XDP512 with a real EEPROM. CAS4+ is an MC9S12XEP100 partitioned as 32 KB user D-Flash and no EEE. The profile refuses to convert either.
 
@@ -80,7 +86,7 @@ The two hex views stay locked on the same offset. Each row is the offset, 16 hex
 
 The summary gives both sizes, whether the files are identical, how many bytes and ranges differ, and the SHA-256 of each file. A file of a few megabytes stays responsive: only the rows on screen are drawn.
 
-**Export text...** writes the summary and the full hex of each range. **Export CSV...** writes the same summary as fields, then one row per range: `offset,length,hex_a,hex_b`.
+**Export text...** writes the summary and the full hex of each range. **Export CSV...** writes the same summary as fields, then one row per range: `offset,length,hex_a,hex_b`. Those CSV column names stay in English. The window follows **Language / Idioma**. `--lang es` prints the summary and the text report in Spanish. SHA-256, offset, hex, and the side letters A and B stay as those terms.
 
 ```bash
 python3 dflash_to_eee.py compare original.bin readback.bin
@@ -102,11 +108,47 @@ result.ranges[0].offset, result.ranges[0].bytes_a, result.ranges[0].bytes_b
 
 ### Windows executable
 
-`build.cmd` installs PyInstaller and tkinterdnd2, then builds `dist\dflash_to_eee.exe` from `dflash_to_eee.spec`. The GitHub Actions workflow `windows-exe` runs the tests on Windows and uploads that executable as a build artifact. A version tag publishes the same exe on the Releases page; see Releasing. Drop-in profiles can be placed in a `profiles` folder next to the exe.
+`build.cmd` installs PyInstaller and tkinterdnd2, then builds `dist\dflash_to_eee.exe` from `dflash_to_eee.spec`. The GitHub Actions workflow `windows-exe` runs the tests on Windows and uploads that executable as a build artifact. A version tag publishes the same exe on the Releases page; see Releasing. That exe is not code-signed, so Windows SmartScreen warns the first time you open it. Check the download, or build from source, before you choose Run anyway. See Verifying downloads / Windows SmartScreen. Drop-in profiles can be placed in a `profiles` folder next to the exe.
+
+## Verifying downloads / Windows SmartScreen
+
+The Windows file on the Releases page is not code-signed. The first time you open it, Windows SmartScreen shows "Windows protected your PC". That is the dialog Windows uses for an unsigned program downloaded from the internet. The executable is an open-source build from the public Release workflow. Click **More info**, then **Run anyway**, only after the hash matches. If you would rather not run the downloaded exe, build it from the same tag.
+
+Download `dflash_to_eee.exe` and `SHA256SUMS.txt` from the same release.
+
+PowerShell, in the folder where you saved the exe:
+
+```powershell
+Get-FileHash .\dflash_to_eee.exe -Algorithm SHA256
+```
+
+`certutil` prints the same hash:
+
+```bat
+certutil -hashfile dflash_to_eee.exe SHA256
+```
+
+`SHA256SUMS.txt` contains that hash in lowercase, two spaces, then `dflash_to_eee.exe`. The release notes print the same hash, and they link the tag, the commit, and the Actions run that built the exe. If the hashes differ, do not run the file.
+
+The first time the program starts, it explains the SmartScreen warning, states that the official copy is free, and shows the SHA-256 of the file that is running. That notice is stored in `%APPDATA%\dflash_to_eee\config.json` so it is not shown again. **Help → Verify this copy** computes the hash again. When the exe was built by the release workflow and GitHub can be reached, it downloads `SHA256SUMS.txt` for that version tag and reports match, mismatch, or that it could not check. The request times out after a few seconds. Starting the program does not contact the network. A source checkout says it is running from source instead of hashing the Python interpreter.
+
+### Build from source
+
+Python 3.10 or newer. Check out the tag named in the release notes.
+
+```bash
+git clone https://github.com/BHGKing/dflash_to_eeprom.git
+cd dflash_to_eeprom
+git checkout v1.0.0
+python3 -m pip install -r requirements.txt
+python3 gui.py
+```
+
+On Windows, `build.cmd` in that checkout installs PyInstaller and tkinterdnd2 and writes `dist\dflash_to_eee.exe`. A local build has no publisher signature either. You produced it from the source you checked out.
 
 ## Releasing
 
-Pushing a version tag runs `.github/workflows/release.yml`. That workflow checks out the tag, runs the tests, builds `dflash_to_eee.exe` with `dflash_to_eee.spec`, and publishes a GitHub Release for the tag. The release gets the exe, `SHA256SUMS.txt` (SHA-256, two spaces, then the file name), and the notes GitHub generates from commits since the previous tag. It uses the built-in `GITHUB_TOKEN` with `contents: write`. No other secret is required.
+Pushing a version tag runs `.github/workflows/release.yml`. That workflow checks out the tag, runs the tests, writes the tag and commit into the executable, builds `dflash_to_eee.exe` with `dflash_to_eee.spec`, and publishes a GitHub Release for the tag. The release gets the exe, `SHA256SUMS.txt` (SHA-256, two spaces, then the file name), and release notes. The notes open with a **This software is free** callout, then a **Verify your download** section (why SmartScreen warns, the SHA-256, the PowerShell command, the source tag and commit, and the Actions run that built the exe), and then the notes GitHub generates from commits since the previous tag. It uses the built-in `GITHUB_TOKEN` with `contents: write`. No other secret is required.
 
 From an up-to-date `master`:
 
@@ -117,11 +159,23 @@ git tag -a v1.0.0 -m "v1.0.0"
 git push origin v1.0.0
 ```
 
-The release shows up on the repository Releases page when the workflow finishes. On Windows, check the download with `Get-FileHash .\dflash_to_eee.exe -Algorithm SHA256` and compare it to `SHA256SUMS.txt` (the file stores the hash in lowercase).
+The release shows up on the repository Releases page when the workflow finishes. Check the download before you run it. The steps are under Verifying downloads / Windows SmartScreen.
 
 Creating the release in the GitHub UI does the same work. Open **Releases → Draft a new release**, choose or create the tag `v1.0.0` on `master`, generate the notes if you want them filled in now, and publish. Publishing creates the tag, which starts the workflow and attaches the exe and checksum to that release. A draft stays a draft; the files are added when the build finishes, and you publish it yourself.
 
-Tags must look like `v1.0.0`. A suffix such as `v1.0.0-rc.1` is published as a pre-release. To rebuild a tag that already exists, open **Actions → Release → Run workflow** and enter that tag. The new exe and checksum replace the previous files. The notes are left as they are.
+Tags must look like `v1.0.0`. A suffix such as `v1.0.0-rc.1` is published as a pre-release. To rebuild a tag that already exists, open **Actions → Release → Run workflow** and enter that tag. The new exe and checksum replace the previous files. The notes are rewritten in the same way, so the SHA-256 in the verify section matches the file that was just built.
+
+## Language
+
+The first time the window opens it follows the system language. A Spanish locale (`es`, `es_MX`, `es_ES`, and the rest) opens in Spanish. **Language / Idioma** switches between English and Español and remembers the choice. The window updates immediately. The file is `%APPDATA%\dflash_to_eee\config.json` on Windows and `~/.config/dflash_to_eee/config.json` elsewhere. The first-run notice uses that same file.
+
+On the command line, `--lang es` or `--lang en` selects the language for that run. With no flag, the tool follows `LC_ALL`, then `LC_MESSAGES`, then `LANG`, then the saved menu choice, then the system language. The original two-argument command keeps the 2017 English log (VIN, part numbers, journal warnings) so it still matches `ci/input/logs`.
+
+```bash
+python3 dflash_to_eee.py --lang es --list-profiles
+```
+
+To add a language, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Command line
 
@@ -130,10 +184,10 @@ The two-argument form is the original FRM3 command. Output bytes and log text ma
 ```bash
 python3 dflash_to_eee.py dflash.bin eeprom.bin
 python3 dflash_to_eee.py --list-profiles
-python3 dflash_to_eee.py --profile jlr_xf_bcm dflash.bin eeprom.bin
+python3 dflash_to_eee.py --lang es --profile jlr_xf_bcm dflash.bin eeprom.bin
 python3 dflash_to_eee.py --profile bmw_frm3 --strict dflash.bin eeprom.bin
 python3 dflash_to_eee.py compare original.bin readback.bin
-python3 dflash_to_eee.py compare original.bin readback.bin --report diff.txt
+python3 dflash_to_eee.py --lang es compare original.bin readback.bin --report diff.txt
 ```
 
 `--strict` exits with status 2 when the length is not the profile's D-Flash size or the journal looks corrupt. The two-argument form does not: a longer file is still replayed from its first 32 KB, which is what the original script did.

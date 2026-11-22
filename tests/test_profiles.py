@@ -11,9 +11,11 @@ from dflash_eee.profiles import (
     BUILTIN,
     RECORDS_PER_SECTOR,
     discover_profiles,
+    eee_word_base,
     get_profile,
     partition_is_valid,
     profile_from_json,
+    smallest_erpart,
 )
 from dflash_eee.report import hex_dump, parse_drop_paths, shorten_middle, size_issue
 
@@ -27,6 +29,14 @@ def test_builtin_statuses_and_geometry():
     assert by_id["jlr_xf_bcm"].status == "supported"
     assert by_id["jlr_xf_bcm"].eee_size == 2048
     assert by_id["jlr_xf_bcm"].erpart_pages == 8
+    assert by_id["bmw_frm3"].eee_word_base == 0
+    assert by_id["jlr_xf_bcm"].eee_word_base == 1024
+    assert by_id["jlr_kvm"].eee_word_base == 1024
+    assert eee_word_base(1) == 1920
+    assert eee_word_base(16) == 0
+    assert smallest_erpart(1024, 1930) == 8
+    assert smallest_erpart(0, 2042) == 16
+    assert smallest_erpart(1920, 2047) == 1
     assert by_id["jlr_kvm"].status == "experimental"
     assert by_id["jlr_kvm"].assumptions
     assert by_id["bmw_frm_f_xet512"].status == "experimental"

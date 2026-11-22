@@ -1,6 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
 # PyInstaller spec for a single-file Windows (or local) GUI executable.
 # Build with: pyinstaller --noconfirm --clean dflash_to_eee.spec
+#
+# The release workflow writes dflash_eee/build_info.py (RELEASE_TAG and
+# COMMIT) after the tests and before this spec runs. A local build leaves
+# those strings empty, and the app then says it is running from a build
+# with no release tag.
 
 import os
 
@@ -17,6 +22,17 @@ try:
 except Exception:
     # Browse still works when tkinterdnd2 is not installed.
     pass
+
+# Message catalogs. PyInstaller unpacks datas next to the code in _MEIPASS,
+# which is where dflash_eee.i18n looks when the exe is frozen.
+try:
+    _spec_root = os.path.dirname(os.path.abspath(SPEC))
+except NameError:
+    _spec_root = os.path.abspath(".")
+_locales = os.path.join(_spec_root, "dflash_eee", "locales")
+if not os.path.isdir(_locales):
+    raise SystemExit("message catalogs not found: %s" % _locales)
+datas.append((_locales, os.path.join("dflash_eee", "locales")))
 
 block_cipher = None
 

@@ -15,7 +15,9 @@ is 256 bytes, the header is two words, and each data record is an address
 word plus a data word, 63 records to a sector. Ready sectors are kept erased.
 The address word's top bits are the record state (empty ``0xF800``, programmed
 ``0xB800`` in the dumps this tool was checked against) and the low 11 bits
-are the EEE word address, which covers the 4 KB maximum.
+are the word address in the 4 KB buffer at 0x13_F000. A profile keeps the
+top-aligned slice AN3743 assigns to its ERPART: 4 KB starts at word 0, 2 KB
+starts at word 1024.
 """
 
 from __future__ import annotations
@@ -24,7 +26,10 @@ import logging
 import struct
 from dataclasses import dataclass, field
 
+from dflash_eee.i18n import t
 from dflash_eee.profiles import (
+    BUILTIN,
+    SECTOR_SIZE,
     AsciiField,
     DateField,
     Field as FieldSpec,
@@ -32,7 +37,22 @@ from dflash_eee.profiles import (
     PartField,
     ProfileError,
     get_profile,
+    profile_text,
+    smallest_erpart,
 )
+
+
+# Logged in English so ci/input/logs stays stable. The stored issue text is
+# translated for the window and the --profile report.
+JOURNAL_MESSAGES = {
+    "converter.warn.multiple_new": "Found more than one set of new blocks!",
+    "converter.warn.no_new": "No new blocks found!",
+    "converter.warn.no_last": "No last block found!",
+    "converter.warn.multiple_last": "More than one 'last' block found!",
+    "converter.warn.longest_empty": "No last or new blocks, using longest chain of empty blocks!",
+    "converter.warn.inconsistency": "Inconsistency detected, last used block not followed by new blocks!",
+    "converter.warn.use_new": "Using new blocks as reference!",
+}
 
 
 class InputError(Exception):
@@ -98,7 +118,7 @@ def render_field(spec: FieldSpec, words: list[int]) -> tuple[str, str]:
         rendered = spec.log_format % value
         caption = rendered.split(": ", 1)[-1]
         return spec.label, caption
-    raise ProfileError("Cannot render field %r" % spec)
+    raise ProfileError(t("profile.err.render_field", spec=spec))
 
 
 def render_info(profile: ModuleProfile, words: list[int], corrupt: bool) -> str:
@@ -122,8 +142,8 @@ def render_info(profile: ModuleProfile, words: list[int], corrupt: bool) -> str:
             elif isinstance(spec, PartField):
                 result += (spec.log_format % _part_value(spec, words)) + "\n"
         return result
-    result += "Profile: %s\n" % profile.title
-    result += "EEE image: %d bytes\n" % (len(words) * 2)
+    result += t("cli.profile_line", title=profile_text(profile, "title")) + "\n"
+    result += t("cli.eee_image", n=len(words) * 2) + "\n"
     return result
 
 
@@ -189,10 +209,26 @@ class DFlashConverter(object):
         self.data: list[int] = []
         self.messages: list[tuple[str, str]] = []
         self.out_of_range = 0
+        self.landed = 0
+        self.addr_min: int | None = None
+        self.addr_max: int | None = None
 
     def _emit(self, level: str, message: str) -> None:
+        """Record and log a historical decoder sentence. It stays in English."""
+
         self.messages.append((level, message))
         getattr(logging, level)(message)
+
+    def _journal(self, key: str) -> None:
+        """Log the English journal sentence and store the translated one.
+
+        ``ci/input/logs`` compares the logger text. The validation panel reads
+        ``messages``, so that copy follows the active language.
+        """
+
+        english = JOURNAL_MESSAGES[key]
+        self.messages.append(("warning", t(key, default=english)))
+        logging.warning(english)
 
     def _read_file(self, filename: str) -> None:
         with open(filename, "rb") as infile:
@@ -269,12 +305,12 @@ class DFlashConverter(object):
                 if newblock is None:
                     newblock = curr_block
                 elif ended:
-                    self._emit("warning", "Found more than one set of new blocks!")
+                    self._journal("converter.warn.multiple_new")
                     return None
             elif block_types[curr_block] != self.EMPTY and newblock is not None:
                 ended = True
         if newblock is None:
-            self._emit("warning", "No new blocks found!")
+            self._journal("converter.warn.no_new")
             return None
         return (newblock - 1) % self.NB_BLOCKS
 
@@ -283,9 +319,9 @@ class DFlashConverter(object):
         if count == 1:
             return self.block_types.index(self.LAST)
         if count == 0:
-            self._emit("warning", "No last block found!")
+            self._journal("converter.warn.no_last")
             return None
-        self._emit("warning", "More than one 'last' block found!")
+        self._journal("converter.warn.multiple_last")
         return None
 
     def _find_longest_empty(self):
@@ -310,7 +346,7 @@ class DFlashConverter(object):
 
         if endblock_new is None:
             if endblock_last is None:
-                self._emit("warning", "No last or new blocks, using longest chain of empty blocks!")
+                self._journal("converter.warn.longest_empty")
                 self.endblock = self._find_longest_empty()
                 self.endblock_reason = "longest_empty"
             else:
@@ -324,28 +360,69 @@ class DFlashConverter(object):
                     endblock_new_wrapped += len(self.block_types)
                 empty_run = block_types[endblock_last + 1:endblock_new_wrapped + 1]
                 if empty_run.count(self.EMPTY) != endblock_new_wrapped - endblock_last:
-                    self._emit("warning", "Inconsistency detected, last used block not followed by new blocks!")
-                    self._emit("warning", "Using new blocks as reference!")
+                    self._journal("converter.warn.inconsistency")
+                    self._journal("converter.warn.use_new")
             self.endblock = endblock_new
             self.endblock_reason = "new_blocks"
 
     def _build_image(self) -> None:
         startblock = (self.endblock + 1) % self.NB_BLOCKS
+        base = self.profile.eee_word_base
         data = [0xFFFF] * self.EESIZE
         order = list(range(startblock, self.NB_BLOCKS)) + list(range(0, startblock))
+        self.out_of_range = 0
+        self.landed = 0
+        self.addr_min = None
+        self.addr_max = None
         for block in order:
-            for item in self.block_data[block]:
-                addr = item[0]
-                if addr >= self.EESIZE:
+            for addr, value in self.block_data[block]:
+                if self.addr_min is None or addr < self.addr_min:
+                    self.addr_min = addr
+                if self.addr_max is None or addr > self.addr_max:
+                    self.addr_max = addr
+                slot = addr - base
+                if slot < 0 or slot >= self.EESIZE:
                     self.out_of_range += 1
                     self.corrupt = True
-                    self._emit(
-                        "error",
-                        "Record address 0x%04X is outside the %d-byte EEE" % (addr, self.EESIZE * 2),
-                    )
                     continue
-                data[addr] = item[1]
+                data[slot] = value
+                self.landed += 1
         self.data = data
+
+    def _window_issue(self) -> Issue | None:
+        """One sentence when record addresses miss this profile's EEE slice."""
+
+        if not self.out_of_range or self.addr_min is None or self.addr_max is None:
+            return None
+        pages = smallest_erpart(self.addr_min, self.addr_max)
+        count_key = "report.window.outside.one" if self.out_of_range == 1 else "report.window.outside.many"
+        parts = [t(count_key, n=self.out_of_range)]
+        if self.landed == 0:
+            parts.append(t("report.window.empty"))
+        if pages is not None:
+            size = pages * SECTOR_SIZE
+            if size != self.profile.eee_size:
+                supported = [
+                    profile.title for profile in BUILTIN
+                    if profile.conversion_enabled and profile.erpart_pages == pages
+                    and profile.status == "supported" and profile.id != self.profile.id
+                ]
+                others = [
+                    profile.title for profile in BUILTIN
+                    if profile.conversion_enabled and profile.erpart_pages == pages
+                    and profile.status != "supported" and profile.id != self.profile.id
+                ]
+                names = supported or others
+                where = t("report.window.where", size=size, pages=pages)
+                if names:
+                    parts.append(t(
+                        "report.window.try",
+                        where=where,
+                        names=t("report.window.or").join(names),
+                    ))
+                else:
+                    parts.append(t("report.window.belong", where=where))
+        return Issue("error", " ".join(parts))
 
     def _image_bytes(self) -> bytes:
         return b"".join(struct.pack(">H", word) for word in self.data)
@@ -370,8 +447,13 @@ class DFlashConverter(object):
         logging.info(self._get_info())
 
     def to_result(self, input_size: int, check_size: bool) -> ConversionResult:
-        image = self._image_bytes()
+        records = sum(len(items) for items in self.block_data)
+        blank = self.out_of_range > 0 and self.landed == 0 and records > 0
+        image = None if blank else self._image_bytes()
         issues = [Issue(level, text) for level, text in self.messages]
+        window_issue = self._window_issue()
+        if window_issue is not None:
+            issues.append(window_issue)
         if check_size and input_size != self.profile.dflash_size:
             if input_size < self.profile.scan_offset + self.profile.scan_sectors * self.BLOCKSIZE:
                 # Already failed earlier. Kept for callers that still ask.
@@ -381,24 +463,22 @@ class DFlashConverter(object):
                     0,
                     Issue(
                         "warning",
-                        "Wrong size: %d bytes. %s expects %d. Extra bytes are ignored."
-                        % (input_size, self.profile.title, self.profile.dflash_size),
+                        t(
+                            "report.size.extra",
+                            nbytes=input_size,
+                            title=profile_text(self.profile, "title"),
+                            expected=self.profile.dflash_size,
+                        ),
                     ),
                 )
         validish = self.block_types.count(self.VALID) + self.block_types.count(self.LAST)
         if validish == 0:
             issues.append(Issue(
                 "error",
-                "Unrecognized D-Flash layout: no sector header 0x%04X." % self.BLOCK_VALID,
-            ))
-        if self.out_of_range:
-            issues.append(Issue(
-                "error",
-                "%d record(s) pointed past the %d-byte EEE and were not written."
-                % (self.out_of_range, self.profile.eee_size),
+                t("report.unrecognized", tag=self.BLOCK_VALID),
             ))
         fields = []
-        if self.profile.fields and self.data:
+        if image is not None and self.profile.fields and self.data:
             fields = [render_field(spec, self.data) for spec in self.profile.fields]
         reason = {
             "new_blocks": "Ready sectors mark the end of the journal.",
@@ -415,8 +495,11 @@ class DFlashConverter(object):
             "records": sum(len(items) for items in self.block_data),
             "endblock": self.endblock,
             "endblock_reason": reason,
-            "eee_bytes": len(image),
+            "eee_bytes": 0 if image is None else len(image),
             "out_of_range": self.out_of_range,
+            "landed": self.landed,
+            "addr_min": self.addr_min,
+            "addr_max": self.addr_max,
         }
         return ConversionResult(
             image=image,
@@ -444,7 +527,7 @@ def convert_bytes(data: bytes, profile: ModuleProfile | None = None, check_size:
         return ConversionResult(
             image=None,
             profile=profile,
-            issues=[Issue("error", profile.summary)],
+            issues=[Issue("error", profile_text(profile, "summary"))],
             input_size=len(data),
             corrupt=True,
         )
@@ -455,8 +538,12 @@ def convert_bytes(data: bytes, profile: ModuleProfile | None = None, check_size:
             profile=profile,
             issues=[Issue(
                 "error",
-                "File is %d bytes. %s needs %d bytes of D-Flash (this dump is short)."
-                % (len(data), profile.title, profile.dflash_size),
+                t(
+                    "report.size.file_short",
+                    nbytes=len(data),
+                    title=profile_text(profile, "title"),
+                    needed=profile.dflash_size,
+                ),
             )],
             input_size=len(data),
             corrupt=True,

@@ -23,6 +23,8 @@ from bisect import bisect_right
 from dataclasses import dataclass
 from pathlib import Path
 
+from dflash_eee.i18n import t
+
 ROW_BYTES = 16
 ADDR_DIGITS = 8
 _CHUNK = 65536
@@ -68,23 +70,39 @@ class CompareResult:
     def summary_line(self) -> str:
         """One sentence: identical or not, counts, and the sizes."""
 
-        relation = "Identical" if self.identical else "Not identical"
-        byte_word = "byte" if self.differing_bytes == 1 else "bytes"
-        range_word = "range" if len(self.ranges) == 1 else "ranges"
+        relation = t("cli.compare.relation.identical") if self.identical else t("cli.compare.relation.different")
+        byte_word = t("cli.compare.byte.one") if self.differing_bytes == 1 else t("cli.compare.byte.many")
+        range_word = t("cli.compare.range.one") if len(self.ranges) == 1 else t("cli.compare.range.many")
         if self.size_mismatch:
             side = "A" if self.longer == "a" else "B"
-            sizes = "Size mismatch: A is %d bytes, B is %d bytes, %d extra in %s." % (
-                self.size_a, self.size_b, self.extra_bytes, side)
+            sizes = t(
+                "cli.compare.size_mismatch",
+                size_a=self.size_a,
+                size_b=self.size_b,
+                extra=self.extra_bytes,
+                side=side,
+            )
         else:
-            sizes = "Sizes match (%d bytes)." % self.size_a
-        return "%s. %d differing %s in %d %s. %s" % (
-            relation, self.differing_bytes, byte_word, len(self.ranges), range_word, sizes)
+            sizes = t("cli.compare.sizes_match", n=self.size_a)
+        return t(
+            "cli.compare.summary",
+            relation=relation,
+            differing=self.differing_bytes,
+            byte_word=byte_word,
+            ranges=len(self.ranges),
+            range_word=range_word,
+            sizes=sizes,
+        )
 
     def summary_text(self) -> str:
         """Summary line plus the SHA-256 of each buffer."""
 
-        return "%s\nA SHA-256: %s\nB SHA-256: %s" % (
-            self.summary_line(), self.sha256_a, self.sha256_b)
+        return t(
+            "cli.compare.summary_sha",
+            line=self.summary_line(),
+            sha_a=self.sha256_a,
+            sha_b=self.sha256_b,
+        )
 
 
 def compare_bytes(data_a: bytes | bytearray | memoryview, data_b: bytes | bytearray | memoryview) -> CompareResult:
@@ -277,21 +295,26 @@ def format_cli_report(result: CompareResult, name_a: str, name_b: str, preview: 
     """Terminal summary. Long runs show the first bytes and a count of the rest."""
 
     lines = [
-        "File A: %s" % name_a,
-        "  %d bytes" % result.size_a,
-        "  SHA-256: %s" % result.sha256_a,
-        "File B: %s" % name_b,
-        "  %d bytes" % result.size_b,
-        "  SHA-256: %s" % result.sha256_b,
+        t("cli.compare.file_line", side="A", name=name_a),
+        t("cli.compare.cli_nbytes", n=result.size_a),
+        t("cli.compare.sha", sha=result.sha256_a),
+        t("cli.compare.file_line", side="B", name=name_b),
+        t("cli.compare.cli_nbytes", n=result.size_b),
+        t("cli.compare.sha", sha=result.sha256_b),
         result.summary_line(),
     ]
     if result.ranges:
         lines.append("")
         for item in result.ranges:
-            word = "byte" if item.length == 1 else "bytes"
-            lines.append("%08X  %d %s" % (item.offset, item.length, word))
-            lines.append("  A: %s" % _preview_hex(item.bytes_a, preview))
-            lines.append("  B: %s" % _preview_hex(item.bytes_b, preview))
+            word = t("cli.compare.unit.one") if item.length == 1 else t("cli.compare.unit.many")
+            lines.append(t(
+                "cli.compare.cli_range",
+                offset="%08X" % item.offset,
+                n=item.length,
+                word=word,
+            ))
+            lines.append(t("cli.compare.side_hex", side="A", hex=_preview_hex(item.bytes_a, preview)))
+            lines.append(t("cli.compare.side_hex", side="B", hex=_preview_hex(item.bytes_b, preview)))
     return "\n".join(lines) + "\n"
 
 
@@ -417,12 +440,12 @@ def _cell_kind(pos: int, index: DiffIndex | None, selected_lo: int | None, selec
 
 def _preview_hex(data: bytes, limit: int) -> str:
     if not data:
-        return "(none)"
+        return t("cli.compare.preview.none")
     shown = data[:limit]
     text = " ".join("%02X" % byte for byte in shown)
     extra = len(data) - len(shown)
     if extra:
-        text += "  (+%d more)" % extra
+        text += t("cli.compare.preview.more", n=extra)
     return text
 
 
@@ -432,20 +455,20 @@ def _hex_bytes(data: bytes) -> str:
 
 def _format_text(result: CompareResult, name_a: str, name_b: str) -> str:
     lines = [
-        "Binary compare",
-        "File A: %s" % name_a,
-        "  Size: %d bytes" % result.size_a,
-        "  SHA-256: %s" % result.sha256_a,
-        "File B: %s" % name_b,
-        "  Size: %d bytes" % result.size_b,
-        "  SHA-256: %s" % result.sha256_b,
+        t("cli.compare.report_title"),
+        t("cli.compare.file_line", side="A", name=name_a),
+        t("cli.compare.report_size", n=result.size_a),
+        t("cli.compare.sha", sha=result.sha256_a),
+        t("cli.compare.file_line", side="B", name=name_b),
+        t("cli.compare.report_size", n=result.size_b),
+        t("cli.compare.sha", sha=result.sha256_b),
         result.summary_line(),
         "",
     ]
     if not result.ranges:
-        lines.append("No differences.")
+        lines.append(t("cli.compare.no_differences"))
     else:
-        lines.append("Offset    Length")
+        lines.append(t("cli.compare.report_columns"))
         for item in result.ranges:
             lines.append("%08X  %d" % (item.offset, item.length))
             lines.extend(_side_lines("A", item.bytes_a))
@@ -456,19 +479,20 @@ def _format_text(result: CompareResult, name_a: str, name_b: str) -> str:
 
 def _side_lines(label: str, data: bytes) -> list[str]:
     if not data:
-        return ["  %s: (none)" % label]
+        return [t("cli.compare.side_none", side=label)]
     lines = []
     for start in range(0, len(data), ROW_BYTES):
         chunk = data[start:start + ROW_BYTES]
         hex_part = _hex_bytes(chunk)
         if start == 0:
-            lines.append("  %s: %s" % (label, hex_part))
+            lines.append(t("cli.compare.side_hex", side=label, hex=hex_part))
         else:
             lines.append("     %s" % hex_part)
     return lines
 
 
 def _format_csv(result: CompareResult, name_a: str, name_b: str) -> str:
+    # Column names stay English. offset, hex, and sha256 are the interchange terms.
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\n")
     writer.writerow(["field", "value"])
