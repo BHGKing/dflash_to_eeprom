@@ -5,6 +5,7 @@
 """Drive the desktop window without a mouse. Skipped when Tk cannot open."""
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -17,12 +18,17 @@ ZERO = ROOT / "ci" / "input" / "dflash" / "5188431849b4613152fd7bdba6a3ff0a4fd64
 
 @pytest.fixture
 def app():
-    if not os.environ.get("DISPLAY"):
+    # Windows has a desktop session and does not use DISPLAY. Elsewhere, skip
+    # when there is no X server, and also when Tk itself refuses to open.
+    if sys.platform != "win32" and not os.environ.get("DISPLAY"):
         pytest.skip("no display")
     tk = pytest.importorskip("tkinter")
     from gui import App
 
-    root = tk.Tk()
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        pytest.skip("Tk cannot open a window: %s" % exc)
     root.withdraw()
     window = App(root)
     yield window

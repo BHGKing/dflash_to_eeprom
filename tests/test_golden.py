@@ -53,10 +53,10 @@ def test_golden_eeprom_bytes(tmp_path):
     assert missing, "expected some dumps without a golden image"
 
 
-def test_golden_log_messages():
+def test_golden_log_messages(tmp_path):
     for source in sorted(DFLASH.glob("*.bin")):
         golden = (LOGS / source.name).read_bytes()
-        destination = Path("/tmp") / ("eee-" + source.name)
+        destination = tmp_path / ("eee-" + source.name)
         result = _run(source, destination)
         got = _log_lines(result.stdout + result.stderr)
         expect = _log_lines(golden)
