@@ -14,14 +14,18 @@ else {
         die("Error!");
     }
     else {
+        $eeprom = $result_path . '/' . $sha1 . '.bin';
+        if (!is_file($eeprom)) {
+            die("Error!");
+        }
         header('Content-disposition: attachment; filename=eeprom.bin');
         header('Content-type: application/octet-stream');
-        header('Content-Length: '.filesize($file));
+        header('Content-Length: '.filesize($eeprom));
         header("Pragma: no-cache");
         header("Expires: 0");
         
-        $fp = fopen($result_path . '/' . $sha1 . '.bin', "r") or die("Unable to open file!");
-        echo fread($fp,$required_size);
+        $fp = fopen($eeprom, "rb") or die("Unable to open file!");
+        echo stream_get_contents($fp);
         fclose($fp);
     }
 }

@@ -1,2 +1,6 @@
-install: true
-script: ci/run_ci.sh
+language: python
+python:
+  - "3.12"
+install:
+  - pip install pytest
+script: python -m pytest -q

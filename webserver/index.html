@@ -11,13 +11,20 @@
 <body>
   <div id="main">
     <h1>FRM3 D-Flash to EEPROM converter</h1>
-    <p>Here you can simply upload your D-Flash image to have it converted to an Eeprom image for the FRM3. <br />
-       If you have no idea why you would need this, you don't need this.</p>
+    <p>Upload a raw D-Flash image. The same converter used by the desktop tool and the command line rebuilds the emulated EEPROM. Keep a backup of the original dump, write the result to the EEE partition (not back to D-Flash), and verify the read-back.</p>
     <p>This website stores all uploaded files for analysis. Note that the dump will contain the VIN number
        of your car, as well as mileage information and other data. The file is only saved with the intention
        to improve the conversion tool.</p>
     <form action="convert.php" method="post" enctype="multipart/form-data">
-      Select the D-flash file to upload:
+      Module:
+      <select name="profile">
+        <option value="bmw_frm3" selected>BMW / Mini FRM3 (supported, 4 KB EEPROM)</option>
+        <option value="jlr_xf_bcm">Jaguar XF BCM / BCMB (supported, 2 KB EEPROM)</option>
+        <option value="bmw_frm_f_xet512">BMW FRM F-series XET512 script (experimental)</option>
+        <option value="jlr_kvm">Jaguar / Land Rover KVM / RFA (experimental)</option>
+        <option value="bmw_cas4">BMW CAS4 / CAS4+ (not supported)</option>
+      </select><br />
+      Select the D-flash file to upload (32768 bytes):
       <input type="file" name="dflashimage" id="dflashimage" /><br />
       <label><input type="checkbox" name="storeagreed" value="yes" /> I accept that the D-flash image is stored on the server</label><br />
       <input type="submit" name="submit" value="Upload">
